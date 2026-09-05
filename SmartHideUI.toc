@@ -1,0 +1,7 @@
+## Interface: 20506
+## Title: SmartHideUI
+## Notes: Addon to intelligently hide the user interface to get a more cinematic experience.
+## Author: Hallgarden
+## Version: 0.1.0
+
+Main.lua
