@@ -4,8 +4,15 @@ local enabled, delay, lastActivity = true, 3, 0
 local hidden = false
 local originalAlpha = {}
 local unsupportedAlpha = setmetatable({}, { __mode = "k" })
-local ApplyCombatUI, ApplyBagUI, ApplyQuestUI, ApplySpellbookUI
+local ApplyCombatUI, ApplyBagUI, ApplyQuestUI, ApplySpellbookUI, ApplyMapUI
+local ApplyQuestLogUI
 local HideUI
+local function IsQuestLogOpen()
+    return QuestLogFrame and QuestLogFrame:IsShown()
+end
+local function IsMapOpen()
+    return WorldMapFrame and WorldMapFrame:IsShown()
+end
 local function IsSpellbookOpen()
     return SpellBookFrame and SpellBookFrame:IsShown()
 end
@@ -101,6 +108,14 @@ local function Activity()
         ApplyCombatUI()
         return
     end
+    if enabled and hidden and IsMapOpen() then
+        ApplyMapUI()
+        return
+    end
+    if enabled and hidden and IsQuestLogOpen() then
+        ApplyQuestLogUI()
+        return
+    end
     if enabled and hidden and (hidden == "spellbook" or IsSpellbookOpen()) then
         ApplySpellbookUI()
         return
@@ -113,7 +128,7 @@ local function Activity()
         ApplyBagUI()
         return
     end
-    if enabled and hidden == "combat" then
+    if enabled and (hidden == "combat" or hidden == "map" or hidden == "questlog") then
         HideUI()
         return
     end
@@ -268,10 +283,35 @@ local function ApplySelectiveUI(mode)
     if hidden ~= mode then RestoreUI() end
     local keep, ancestors = { [controller] = true }, {}
     local visibleFrames = { "GameTooltip" }
-    local modeFrames = mode == "quest" and questFrames
+    local windowMode = mode == "map" or mode == "questlog"
+    local modeFrames = windowMode and {}
+        or mode == "quest" and questFrames
         or (mode == "combat" and combatFrames or actionFrames)
     for _, name in ipairs(modeFrames) do
         visibleFrames[#visibleFrames + 1] = name
+    end
+    -- Map and quest log share open-window composition without revealing the HUD.
+    if IsMapOpen() then
+        visibleFrames[#visibleFrames + 1] = "WorldMapFrame"
+    end
+    if IsQuestLogOpen() then
+        visibleFrames[#visibleFrames + 1] = "QuestLogFrame"
+    end
+    if IsMapOpen() or IsQuestLogOpen() then
+        for name in pairs(UIPanelWindows or {}) do
+            local frame = _G[name]
+            if frame and frame:IsShown() then
+                visibleFrames[#visibleFrames + 1] = name
+            end
+        end
+        for _, name in ipairs({ "GameMenuFrame", "SettingsPanel", "InterfaceOptionsFrame",
+            "ChatConfigFrame", "StaticPopup1", "StaticPopup2", "StaticPopup3", "StaticPopup4" }) do
+            local frame = _G[name]
+            if frame and frame:IsShown() then visibleFrames[#visibleFrames + 1] = name end
+        end
+    end
+    if windowMode and (IsSpellbookOpen() or AreBagsOpen()) then
+        for _, name in ipairs(actionFrames) do visibleFrames[#visibleFrames + 1] = name end
     end
     -- Compose the spellbook with quest, bag and combat controls when they overlap.
     if IsSpellbookOpen() then
@@ -331,6 +371,34 @@ ApplyCombatUI = function() ApplySelectiveUI("combat") end
 ApplyBagUI = function() ApplySelectiveUI("bags") end
 ApplyQuestUI = function() ApplySelectiveUI("quest") end
 ApplySpellbookUI = function() ApplySelectiveUI("spellbook") end
+ApplyMapUI = function() ApplySelectiveUI("map") end
+ApplyQuestLogUI = function() ApplySelectiveUI("questlog") end
+
+local hookedQuestLog
+local function HookQuestLog()
+    if not QuestLogFrame or hookedQuestLog == QuestLogFrame then return end
+    hookedQuestLog = QuestLogFrame
+    QuestLogFrame:HookScript("OnShow", function()
+        if enabled and hidden then
+            if InCombat() then ApplyCombatUI()
+            elseif IsMapOpen() then ApplyMapUI()
+            else ApplyQuestLogUI() end
+        end
+    end)
+end
+HookQuestLog()
+
+local hookedMap
+local function HookMap()
+    if not WorldMapFrame or hookedMap == WorldMapFrame then return end
+    hookedMap = WorldMapFrame
+    WorldMapFrame:HookScript("OnShow", function()
+        if enabled and hidden then
+            if InCombat() then ApplyCombatUI() else ApplyMapUI() end
+        end
+    end)
+end
+HookMap()
 
 local hookedSpellbook
 local function HookSpellbook()
@@ -408,14 +476,16 @@ local function KeyboardActivity(_, key)
     if IsControlKeyDown() then binding = "CTRL-" .. binding end
     if IsAltKeyDown() then binding = "ALT-" .. binding end
     local action = GetBindingAction(binding)
-    -- Escape clears the target before opening the menu. Suppress both key edges,
-    -- since the target may already be gone when the key is released.
-    if hidden and action == "TOGGLEGAMEMENU" and UnitExists("target") then
+    -- Escape can close a window or clear the target. Suppress both key edges,
+    -- since the window or target may already be gone when the key is released.
+    if hidden and action == "TOGGLEGAMEMENU"
+        and (IsMapOpen() or IsQuestLogOpen() or UnitExists("target")) then
         targetClearingKeysDown[key] = true
         return
     end
     -- The binding runs after keyboard activity; wait for the panel's OnShow.
-    if action == "TOGGLESPELLBOOK" or action == "TOGGLEPETBOOK" then return end
+    if action == "TOGGLESPELLBOOK" or action == "TOGGLEPETBOOK"
+        or action == "TOGGLEWORLDMAP" or action == "TOGGLEQUESTLOG" then return end
     if hidden and (action == "INTERACTTARGET" or action == "INTERACTMOUSEOVER") then
         return
     end
@@ -447,7 +517,7 @@ controller:SetScript("OnKeyUp", function(self, key)
 end)
 
 for _, event in ipairs({
-    "PLAYER_LOGIN", "PLAYER_ENTERING_WORLD", "PLAYER_LEAVING_WORLD",
+    "PLAYER_LOGIN", "PLAYER_ENTERING_WORLD", "PLAYER_LEAVING_WORLD", "ADDON_LOADED",
     "PLAYER_REGEN_DISABLED", "PLAYER_REGEN_ENABLED", "PLAYER_TARGET_CHANGED",
     -- Movement and world mouse buttons (including mouse steering) do not reveal UI.
     "BAG_UPDATE_DELAYED", "LOOT_OPENED", "LOOT_CLOSED", "QUEST_DETAIL",
@@ -464,7 +534,10 @@ for _, event in ipairs({ "UNIT_HEALTH", "UNIT_MAXHEALTH", "UNIT_POWER_UPDATE",
     controller:RegisterUnitEvent(event, "player")
 end
 controller:SetScript("OnEvent", function(_, event)
+    HookMap()
+    HookQuestLog()
     HookSpellbook()
+    if event == "ADDON_LOADED" then return end
     -- Manual deselection and automatic target loss on death are not activity.
     if event == "PLAYER_TARGET_CHANGED" and not UnitExists("target") then return end
     -- Quest events can arrive before Blizzard shows the conversation frame.
@@ -504,6 +577,14 @@ controller:SetScript("OnUpdate", function(_, elapsed)
         ApplyCombatUI()
         ApplyBagButtons()
         return
+    elseif hidden and IsMapOpen() then
+        ApplyMapUI()
+        ApplyBagButtons()
+        return
+    elseif hidden and IsQuestLogOpen() then
+        ApplyQuestLogUI()
+        ApplyBagButtons()
+        return
     elseif hidden and IsSpellbookOpen() then
         ApplySpellbookUI()
         ApplyBagButtons()
@@ -521,7 +602,8 @@ controller:SetScript("OnUpdate", function(_, elapsed)
         ApplyBagUI()
         ApplyBagButtons()
         return
-    elseif hidden == "bags" or hidden == "spellbook" then
+    elseif hidden == "bags" or hidden == "spellbook" or hidden == "map"
+        or hidden == "questlog" then
         RestoreUI()
         HideUI()
         ApplyBagButtons()
