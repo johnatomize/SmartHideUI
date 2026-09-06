@@ -117,10 +117,8 @@ end
 
 local function IsInteracting()
     if InCombatLockdown() or UnitAffectingCombat("player")
-        or GetUnitSpeed("player") > 0
         or UnitCastingInfo("player") or UnitChannelInfo("player")
-        or (GetCurrentKeyBoardFocus and GetCurrentKeyBoardFocus())
-        or IsMouseButtonDown() then
+        or (GetCurrentKeyBoardFocus and GetCurrentKeyBoardFocus()) then
         return true
     end
     -- Open panels remain readable even when the mouse stops moving.
@@ -150,16 +148,45 @@ local function IsInteracting()
     return false
 end
 
+-- Resolve bindings so custom movement keys also leave the UI hidden.
+local movementActions = {
+    MOVEFORWARD = true, MOVEBACKWARD = true,
+    STRAFELEFT = true, STRAFERIGHT = true, TURNLEFT = true, TURNRIGHT = true,
+    JUMP = true, TOGGLEAUTORUN = true, STARTAUTORUN = true, STOPAUTORUN = true,
+    PITCHUP = true, PITCHDOWN = true, TOGGLERUN = true,
+    SITSTAND = true, ASCEND = true, DESCEND = true,
+}
+local movementKeysDown = {}
+local function KeyboardActivity(_, key)
+    if key == "LSHIFT" or key == "RSHIFT" or key == "LCTRL" or key == "RCTRL"
+        or key == "LALT" or key == "RALT" then return end
+    local binding = key
+    if IsShiftKeyDown() then binding = "SHIFT-" .. binding end
+    if IsControlKeyDown() then binding = "CTRL-" .. binding end
+    if IsAltKeyDown() then binding = "ALT-" .. binding end
+    if movementActions[GetBindingAction(binding)] then
+        movementKeysDown[key] = true
+        return
+    end
+    Activity()
+end
+
 controller:EnableKeyboard(true)
 controller:SetPropagateKeyboardInput(true)
-controller:SetScript("OnKeyDown", Activity)
-controller:SetScript("OnKeyUp", Activity)
+controller:SetScript("OnKeyDown", KeyboardActivity)
+controller:SetScript("OnKeyUp", function(self, key)
+    if movementKeysDown[key] then
+        movementKeysDown[key] = nil
+        return
+    end
+    KeyboardActivity(self, key)
+    movementKeysDown[key] = nil
+end)
 
 for _, event in ipairs({
     "PLAYER_LOGIN", "PLAYER_ENTERING_WORLD", "PLAYER_LEAVING_WORLD",
     "PLAYER_REGEN_DISABLED", "PLAYER_REGEN_ENABLED", "PLAYER_TARGET_CHANGED",
-    "PLAYER_STARTED_MOVING", "PLAYER_STOPPED_MOVING",
-    "GLOBAL_MOUSE_DOWN", "GLOBAL_MOUSE_UP", "MODIFIER_STATE_CHANGED",
+    -- Movement and world mouse buttons (including mouse steering) do not reveal UI.
     "BAG_UPDATE_DELAYED", "LOOT_OPENED", "LOOT_CLOSED", "QUEST_DETAIL",
     "QUEST_COMPLETE", "GOSSIP_SHOW", "MERCHANT_SHOW", "PLAYER_EQUIPMENT_CHANGED",
     "PLAYER_DEAD", "PLAYER_ALIVE", "PLAYER_UNGHOST",
