@@ -3,7 +3,6 @@ local controller = CreateFrame("Frame", "SmartHideUIController")
 local enabled, delay, lastActivity = true, 3, 0
 local hidden = false
 local originalAlpha = {}
-local lastX, lastY
 local ApplyCombatUI
 
 local function InCombat()
@@ -37,7 +36,7 @@ local function IsMinimapBranch(region)
 end
 
 local function FadeRegion(region)
-    if region == controller or IsMinimapBranch(region) then return end
+    if region == controller or region == GameTooltip or IsMinimapBranch(region) then return end
     if originalAlpha[region] == nil then
         originalAlpha[region] = region:GetAlpha()
     end
@@ -56,6 +55,7 @@ end
 -- Keep only these Blizzard controls during combat. Individual main-bar buttons
 -- are listed because Classic shares their parent with bags and the micro menu.
 local combatFrames = {
+    "GameTooltip",
     "PlayerFrame", "TargetFrame", "BuffFrame", "DebuffFrame", "TemporaryEnchantFrame",
     "MultiBarBottomLeft", "MultiBarBottomRight", "MultiBarLeft", "MultiBarRight",
     "MultiBar5", "MultiBar6", "MultiBar7", "PetActionBarFrame", "PetActionBar",
@@ -137,10 +137,13 @@ local function IsInteracting()
     for index = 1, 4 do
         if IsShown("StaticPopup" .. index) then return true end
     end
+    -- Inspecting a world unit should not reveal the rest of the UI.
+    if UnitExists("mouseover") then return false end
     local foci = GetMouseFoci and GetMouseFoci()
         or (GetMouseFocus and { GetMouseFocus() }) or {}
     for _, focus in ipairs(foci) do
-        if focus ~= WorldFrame and focus ~= UIParent and focus ~= controller then
+        if focus ~= WorldFrame and focus ~= UIParent and focus ~= controller
+            and focus ~= GameTooltip then
             return true
         end
     end
@@ -155,7 +158,7 @@ controller:SetScript("OnKeyUp", Activity)
 for _, event in ipairs({
     "PLAYER_LOGIN", "PLAYER_ENTERING_WORLD", "PLAYER_LEAVING_WORLD",
     "PLAYER_REGEN_DISABLED", "PLAYER_REGEN_ENABLED", "PLAYER_TARGET_CHANGED",
-    "PLAYER_STARTED_MOVING", "PLAYER_STOPPED_MOVING", "UPDATE_MOUSEOVER_UNIT",
+    "PLAYER_STARTED_MOVING", "PLAYER_STOPPED_MOVING",
     "GLOBAL_MOUSE_DOWN", "GLOBAL_MOUSE_UP", "MODIFIER_STATE_CHANGED",
     "BAG_UPDATE_DELAYED", "LOOT_OPENED", "LOOT_CLOSED", "QUEST_DETAIL",
     "QUEST_COMPLETE", "GOSSIP_SHOW", "MERCHANT_SHOW", "PLAYER_EQUIPMENT_CHANGED",
@@ -187,10 +190,8 @@ controller:SetScript("OnUpdate", function(_, elapsed)
     elseif hidden == "combat" then
         Activity()
     end
-    local x, y = GetCursorPosition()
-    local mouseMoved = x ~= lastX or y ~= lastY
-    lastX, lastY = x, y
-    if mouseMoved or IsInteracting() then
+    -- Cursor movement alone must not reveal the UI while inspecting the world.
+    if IsInteracting() then
         Activity()
     elseif GetTime() - lastActivity >= delay then
         -- Include frames created or shown while already idle.
