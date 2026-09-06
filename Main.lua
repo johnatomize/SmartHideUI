@@ -4,6 +4,11 @@ local enabled, delay, lastActivity = true, 3, 0
 local hidden = false
 local originalAlpha = {}
 local lastX, lastY
+local ApplyCombatUI
+
+local function InCombat()
+    return InCombatLockdown() or UnitAffectingCombat("player")
+end
 
 local function RestoreUI()
     for region, alpha in pairs(originalAlpha) do
@@ -15,6 +20,10 @@ end
 
 local function Activity()
     lastActivity = GetTime()
+    if enabled and InCombat() then
+        ApplyCombatUI()
+        return
+    end
     if hidden then RestoreUI() end
 end
 
@@ -36,11 +45,69 @@ local function FadeRegion(region)
 end
 
 local function HideUI()
+    if hidden == "combat" then RestoreUI() end
     -- Keep UIParent shown so protected action buttons and bindings still work.
     -- Preserve the minimap's parent chain without reparenting Blizzard frames.
     for _, child in ipairs({ UIParent:GetChildren() }) do FadeRegion(child) end
     for _, region in ipairs({ UIParent:GetRegions() }) do FadeRegion(region) end
-    hidden = true
+    hidden = "idle"
+end
+
+-- Keep only these Blizzard controls during combat. Individual main-bar buttons
+-- are listed because Classic shares their parent with bags and the micro menu.
+local combatFrames = {
+    "PlayerFrame", "TargetFrame", "BuffFrame", "DebuffFrame", "TemporaryEnchantFrame",
+    "MultiBarBottomLeft", "MultiBarBottomRight", "MultiBarLeft", "MultiBarRight",
+    "MultiBar5", "MultiBar6", "MultiBar7", "PetActionBarFrame", "PetActionBar",
+    "StanceBarFrame", "StanceBar", "PossessBarFrame", "PossessActionBar",
+    "OverrideActionBar", "ExtraActionBarFrame", "MultiCastActionBarFrame",
+    "ActionBarUpButton", "ActionBarDownButton", "MainMenuBarPageNumber",
+}
+for index = 1, 12 do
+    combatFrames[#combatFrames + 1] = "ActionButton" .. index
+end
+-- Older Classic layouts may parent aura buttons directly to UIParent.
+for index = 1, 32 do
+    combatFrames[#combatFrames + 1] = "BuffButton" .. index
+    combatFrames[#combatFrames + 1] = "DebuffButton" .. index
+end
+for index = 1, 3 do
+    combatFrames[#combatFrames + 1] = "TempEnchant" .. index
+end
+
+ApplyCombatUI = function()
+    if hidden ~= "combat" then RestoreUI() end
+    local keep, ancestors = { [controller] = true }, {}
+    for _, name in ipairs(combatFrames) do
+        local region = _G[name]
+        if region then
+            keep[region] = true
+            local parent = region:GetParent()
+            while parent and parent ~= UIParent do
+                ancestors[parent] = true
+                parent = parent:GetParent()
+            end
+        end
+    end
+    local function Visit(region)
+        if keep[region] or ancestors[region] then
+            if originalAlpha[region] ~= nil then
+                region:SetAlpha(originalAlpha[region])
+                originalAlpha[region] = nil
+            end
+            if keep[region] then return end
+            for _, child in ipairs({ region:GetChildren() }) do Visit(child) end
+            for _, texture in ipairs({ region:GetRegions() }) do Visit(texture) end
+        else
+            if originalAlpha[region] == nil then
+                originalAlpha[region] = region:GetAlpha()
+            end
+            if region:GetAlpha() ~= 0 then region:SetAlpha(0) end
+        end
+    end
+    for _, child in ipairs({ UIParent:GetChildren() }) do Visit(child) end
+    for _, region in ipairs({ UIParent:GetRegions() }) do Visit(region) end
+    hidden = "combat"
 end
 
 local function IsShown(name)
@@ -114,6 +181,12 @@ controller:SetScript("OnUpdate", function(_, elapsed)
     elapsedSinceCheck = elapsedSinceCheck + elapsed
     if elapsedSinceCheck < 0.05 then return end
     elapsedSinceCheck = 0
+    if InCombat() then
+        ApplyCombatUI()
+        return
+    elseif hidden == "combat" then
+        Activity()
+    end
     local x, y = GetCursorPosition()
     local mouseMoved = x ~= lastX or y ~= lastY
     lastX, lastY = x, y
@@ -131,9 +204,11 @@ SlashCmdList.SMARTHIDEUI = function(message)
     Activity()
     if command == "on" then
         enabled = true
+        Activity()
         print("SmartHideUI: automatisk döljning på.")
     elseif command == "off" or command == "show" then
         enabled = false
+        RestoreUI()
         print("SmartHideUI: UI visas och automatisk döljning är av.")
     elseif command == "delay" and tonumber(value) and tonumber(value) >= 0.5 then
         delay = tonumber(value)
