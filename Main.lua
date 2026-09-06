@@ -282,7 +282,8 @@ end
 local function ApplySelectiveUI(mode)
     if hidden ~= mode then RestoreUI() end
     local keep, ancestors = { [controller] = true }, {}
-    local visibleFrames = { "GameTooltip" }
+    -- Equipment comparisons use separate tooltips from the hovered item.
+    local visibleFrames = { "GameTooltip", "ShoppingTooltip1", "ShoppingTooltip2" }
     local windowMode = mode == "map" or mode == "questlog"
     local modeFrames = windowMode and {}
         or mode == "quest" and questFrames
@@ -290,14 +291,14 @@ local function ApplySelectiveUI(mode)
     for _, name in ipairs(modeFrames) do
         visibleFrames[#visibleFrames + 1] = name
     end
-    -- Map and quest log share open-window composition without revealing the HUD.
+    -- Bags, map and quest log preserve open windows without revealing the HUD.
     if IsMapOpen() then
         visibleFrames[#visibleFrames + 1] = "WorldMapFrame"
     end
     if IsQuestLogOpen() then
         visibleFrames[#visibleFrames + 1] = "QuestLogFrame"
     end
-    if IsMapOpen() or IsQuestLogOpen() then
+    if AreBagsOpen() or IsMapOpen() or IsQuestLogOpen() then
         for name in pairs(UIPanelWindows or {}) do
             local frame = _G[name]
             if frame and frame:IsShown() then
