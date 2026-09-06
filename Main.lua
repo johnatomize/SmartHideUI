@@ -4,7 +4,15 @@ local enabled, delay, lastActivity = true, 3, 0
 local hidden = false
 local originalAlpha = {}
 local unsupportedAlpha = setmetatable({}, { __mode = "k" })
-local ApplyCombatUI, ApplyBagUI
+local ApplyCombatUI, ApplyBagUI, ApplyQuestUI
+local questFrames = { "QuestFrame", "GossipFrame" }
+local function IsQuestConversationOpen()
+    for _, name in ipairs(questFrames) do
+        local frame = _G[name]
+        if frame and frame:IsShown() then return true end
+    end
+    return false
+end
 local bagButtonAlpha = {}
 local bagButtons = {
     "MainMenuBarBackpackButton", "CharacterBag0Slot", "CharacterBag1Slot",
@@ -21,7 +29,7 @@ local function AreBagsOpen()
 end
 
 local function ApplyBagButtons()
-    local show = not enabled or AreBagsOpen()
+    local show = not enabled or (hidden ~= "quest" and AreBagsOpen())
     for _, name in ipairs(bagButtons) do
         local button = _G[name]
         if button then
@@ -87,6 +95,10 @@ local function Activity()
     lastActivity = GetTime()
     if enabled and InCombat() then
         ApplyCombatUI()
+        return
+    end
+    if enabled and hidden and (hidden == "quest" or IsQuestConversationOpen()) then
+        ApplyQuestUI()
         return
     end
     if enabled and AreBagsOpen() then
@@ -244,8 +256,13 @@ local function ApplySelectiveUI(mode)
     if hidden ~= mode then RestoreUI() end
     local keep, ancestors = { [controller] = true }, {}
     local visibleFrames = { "GameTooltip" }
-    for _, name in ipairs(mode == "combat" and combatFrames or actionFrames) do
+    local modeFrames = mode == "quest" and questFrames
+        or (mode == "combat" and combatFrames or actionFrames)
+    for _, name in ipairs(modeFrames) do
         visibleFrames[#visibleFrames + 1] = name
+    end
+    if mode ~= "quest" and IsQuestConversationOpen() then
+        for _, name in ipairs(questFrames) do visibleFrames[#visibleFrames + 1] = name end
     end
     if mode == "combat" and IsChatting() then
         for index = 1, NUM_CHAT_WINDOWS or 10 do
@@ -255,7 +272,7 @@ local function ApplySelectiveUI(mode)
         end
         visibleFrames[#visibleFrames + 1] = "GeneralDockManager"
     end
-    if AreBagsOpen() then
+    if mode ~= "quest" and AreBagsOpen() then
         for _, name in ipairs(bagButtons) do visibleFrames[#visibleFrames + 1] = name end
         visibleFrames[#visibleFrames + 1] = "ContainerFrameCombinedBags"
         for index = 1, 13 do
@@ -293,6 +310,7 @@ end
 
 ApplyCombatUI = function() ApplySelectiveUI("combat") end
 ApplyBagUI = function() ApplySelectiveUI("bags") end
+ApplyQuestUI = function() ApplySelectiveUI("quest") end
 
 local function IsShown(name)
     local frame = _G[name]
@@ -356,6 +374,9 @@ local function KeyboardActivity(_, key)
     if IsControlKeyDown() then binding = "CTRL-" .. binding end
     if IsAltKeyDown() then binding = "ALT-" .. binding end
     local action = GetBindingAction(binding)
+    if hidden and (action == "INTERACTTARGET" or action == "INTERACTMOUSEOVER") then
+        return
+    end
     -- Let the bag update select visibility after the binding opens/closes it.
     if action == "TOGGLEBACKPACK" or action == "OPENALLBAGS"
         or action == "TOGGLEBAG1" or action == "TOGGLEBAG2"
@@ -384,7 +405,8 @@ for _, event in ipairs({
     "PLAYER_REGEN_DISABLED", "PLAYER_REGEN_ENABLED", "PLAYER_TARGET_CHANGED",
     -- Movement and world mouse buttons (including mouse steering) do not reveal UI.
     "BAG_UPDATE_DELAYED", "LOOT_OPENED", "LOOT_CLOSED", "QUEST_DETAIL",
-    "QUEST_COMPLETE", "GOSSIP_SHOW", "MERCHANT_SHOW", "PLAYER_EQUIPMENT_CHANGED",
+    "QUEST_COMPLETE", "QUEST_GREETING", "QUEST_PROGRESS", "GOSSIP_SHOW",
+    "MERCHANT_SHOW", "PLAYER_EQUIPMENT_CHANGED",
     "PLAYER_DEAD", "PLAYER_ALIVE", "PLAYER_UNGHOST",
 }) do
     controller:RegisterEvent(event)
@@ -396,6 +418,20 @@ for _, event in ipairs({ "UNIT_HEALTH", "UNIT_MAXHEALTH", "UNIT_POWER_UPDATE",
     controller:RegisterUnitEvent(event, "player")
 end
 controller:SetScript("OnEvent", function(_, event)
+    -- Quest events can arrive before Blizzard shows the conversation frame.
+    if enabled and hidden and not InCombat() then
+        if event == "QUEST_DETAIL" or event == "QUEST_COMPLETE"
+            or event == "QUEST_GREETING" or event == "QUEST_PROGRESS"
+            or event == "GOSSIP_SHOW" then
+            ApplyQuestUI()
+            return
+        end
+        -- Right-clicking a quest giver selects them before opening the dialog.
+        if event == "PLAYER_TARGET_CHANGED" and UnitExists("target")
+            and not UnitIsPlayer("target") and not UnitCanAttack("player", "target") then
+            return
+        end
+    end
     -- Resource and aura changes refresh visibility without resetting idle UI.
     if event == "UNIT_HEALTH" or event == "UNIT_MAXHEALTH"
         or event == "UNIT_POWER_UPDATE" or event == "UNIT_MAXPOWER"
@@ -417,6 +453,15 @@ controller:SetScript("OnUpdate", function(_, elapsed)
     elapsedSinceCheck = 0
     if InCombat() then
         ApplyCombatUI()
+        ApplyBagButtons()
+        return
+    elseif hidden and IsQuestConversationOpen() then
+        ApplyQuestUI()
+        ApplyBagButtons()
+        return
+    elseif hidden == "quest" then
+        RestoreUI()
+        if AreBagsOpen() then ApplyBagUI() else HideUI() end
         ApplyBagButtons()
         return
     elseif AreBagsOpen() then
