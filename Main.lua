@@ -44,7 +44,37 @@ local function InCombat()
     return InCombatLockdown() or UnitAffectingCombat("player")
 end
 
+local auraFrames = { "BuffFrame", "DebuffFrame", "TemporaryEnchantFrame" }
+for index = 1, 32 do
+    auraFrames[#auraFrames + 1] = "BuffButton" .. index
+    auraFrames[#auraFrames + 1] = "DebuffButton" .. index
+end
+for index = 1, 3 do
+    auraFrames[#auraFrames + 1] = "TempEnchant" .. index
+end
+local hookedAuraFrames = setmetatable({}, { __mode = "k" })
+
+local function HasPlayerDebuff()
+    if C_UnitAuras and C_UnitAuras.GetAuraDataByIndex then
+        return C_UnitAuras.GetAuraDataByIndex("player", 1, "HARMFUL") ~= nil
+    end
+    return UnitDebuff("player", 1) ~= nil
+end
+
+local function NeedsPlayerFrame()
+    if InCombat() then return true end
+    if UnitHealth("player") < UnitHealthMax("player") then return true end
+    -- Check mana even in shapeshift forms, and energy when it is active.
+    if UnitPower("player", 0) < UnitPowerMax("player", 0) then return true end
+    local powerType = UnitPowerType("player")
+    -- Rage builds from empty: keep the portrait visible until it is spent or decays.
+    if powerType == 1 then return UnitPower("player", 1) > 0 end
+    return powerType == 3
+        and UnitPower("player", 3) < UnitPowerMax("player", 3)
+end
+
 local function RestoreUI()
+    hidden = false
     for region, alpha in pairs(originalAlpha) do
         pcall(region.SetAlpha, region, alpha)
     end
@@ -98,20 +128,85 @@ local function IsMinimapBranch(region)
     return region == MinimapCluster
 end
 
-local function FadeRegion(region)
+local function FadeRegion(region, playerAncestors, keepPlayer, keepAuras)
     if region == controller or region == GameTooltip or IsMinimapBranch(region) then return end
     -- Blizzard animates these frames' alpha; hiding them every tick causes flicker.
     if region == ZoneTextFrame or region == SubZoneTextFrame then return end
+    if (keepPlayer and region == PlayerFrame) or playerAncestors[region] or keepAuras[region] then
+        if originalAlpha[region] ~= nil then
+            pcall(region.SetAlpha, region, originalAlpha[region])
+            originalAlpha[region] = nil
+        end
+        if (keepPlayer and region == PlayerFrame) or keepAuras[region] then return end
+        for _, child in ipairs({ region:GetChildren() }) do
+            FadeRegion(child, playerAncestors, keepPlayer, keepAuras)
+        end
+        for _, texture in ipairs({ region:GetRegions() }) do
+            FadeRegion(texture, playerAncestors, keepPlayer, keepAuras)
+        end
+        return
+    end
     FadeAlpha(region)
 end
 
+local hookedPlayerFrame
 local function HideUI()
     if hidden == "combat" then RestoreUI() end
     hidden = "idle"
     -- Keep UIParent shown so protected action buttons and bindings still work.
     -- Preserve the minimap's parent chain without reparenting Blizzard frames.
-    for _, child in ipairs({ UIParent:GetChildren() }) do FadeRegion(child) end
-    for _, region in ipairs({ UIParent:GetRegions() }) do FadeRegion(region) end
+    local keepPlayer, playerAncestors = NeedsPlayerFrame(), {}
+    local keepAuras, hasDebuff = {}, HasPlayerDebuff()
+    for _, name in ipairs(auraFrames) do
+        local frame = _G[name]
+        if frame then
+            if not hookedAuraFrames[frame] then
+                hooksecurefunc(frame, "SetAlpha", function(aura, alpha)
+                    if alpha ~= 0 and enabled and hidden == "idle"
+                        and not InCombat() and not HasPlayerDebuff() then
+                        FadeAlpha(aura)
+                    end
+                end)
+                hookedAuraFrames[frame] = true
+            end
+            if hasDebuff then
+                keepAuras[frame] = true
+                local parent = frame:GetParent()
+                while parent and parent ~= UIParent do
+                    playerAncestors[parent] = true
+                    parent = parent:GetParent()
+                end
+            end
+        end
+    end
+    if PlayerFrame then
+        if hookedPlayerFrame ~= PlayerFrame then
+            hooksecurefunc(PlayerFrame, "SetAlpha", function(frame, alpha)
+                if alpha ~= 0 and enabled and hidden == "idle" and not NeedsPlayerFrame() then
+                    frame:SetAlpha(0)
+                end
+            end)
+            hookedPlayerFrame = PlayerFrame
+        end
+        local parent = PlayerFrame:GetParent()
+        while keepPlayer and parent and parent ~= UIParent do
+            playerAncestors[parent] = true
+            parent = parent:GetParent()
+        end
+        -- Explicitly fade the portrait even if it ignores its parent's alpha.
+        FadeRegion(PlayerFrame, playerAncestors, keepPlayer, keepAuras)
+    end
+    for _, child in ipairs({ UIParent:GetChildren() }) do
+        FadeRegion(child, playerAncestors, keepPlayer, keepAuras)
+    end
+    for _, region in ipairs({ UIParent:GetRegions() }) do
+        FadeRegion(region, playerAncestors, keepPlayer, keepAuras)
+    end
+    -- Aura buttons may ignore parent alpha or be animated by Blizzard.
+    for _, name in ipairs(auraFrames) do
+        local frame = _G[name]
+        if frame then FadeRegion(frame, playerAncestors, keepPlayer, keepAuras) end
+    end
     hidden = "idle"
 end
 
@@ -274,12 +369,20 @@ for _, event in ipairs({
 }) do
     controller:RegisterEvent(event)
 end
-for _, event in ipairs({ "UNIT_HEALTH", "UNIT_POWER_UPDATE", "UNIT_AURA",
+for _, event in ipairs({ "UNIT_HEALTH", "UNIT_MAXHEALTH", "UNIT_POWER_UPDATE",
+    "UNIT_MAXPOWER", "UNIT_DISPLAYPOWER", "UNIT_AURA",
     "UNIT_SPELLCAST_START", "UNIT_SPELLCAST_STOP", "UNIT_SPELLCAST_SUCCEEDED",
     "UNIT_SPELLCAST_CHANNEL_START", "UNIT_SPELLCAST_CHANNEL_STOP" }) do
     controller:RegisterUnitEvent(event, "player")
 end
 controller:SetScript("OnEvent", function(_, event)
+    -- Resource and aura changes refresh visibility without resetting idle UI.
+    if event == "UNIT_HEALTH" or event == "UNIT_MAXHEALTH"
+        or event == "UNIT_POWER_UPDATE" or event == "UNIT_MAXPOWER"
+        or event == "UNIT_DISPLAYPOWER" or event == "UNIT_AURA" then
+        if enabled and hidden == "idle" then HideUI() end
+        return
+    end
     Activity()
     if event == "PLAYER_LOGIN" then
         print("|cff33ff99" .. addonName .. "|r laddad. UI döljs efter 3 sekunders inaktivitet. /shu för hjälp.")
