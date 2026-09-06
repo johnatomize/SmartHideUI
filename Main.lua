@@ -4,7 +4,10 @@ local enabled, delay, lastActivity = true, 3, 0
 local hidden = false
 local originalAlpha = {}
 local unsupportedAlpha = setmetatable({}, { __mode = "k" })
-local ApplyCombatUI, ApplyBagUI, ApplyQuestUI
+local ApplyCombatUI, ApplyBagUI, ApplyQuestUI, ApplySpellbookUI
+local function IsSpellbookOpen()
+    return SpellBookFrame and SpellBookFrame:IsShown()
+end
 local questFrames = { "QuestFrame", "GossipFrame" }
 local function IsQuestConversationOpen()
     for _, name in ipairs(questFrames) do
@@ -95,6 +98,10 @@ local function Activity()
     lastActivity = GetTime()
     if enabled and InCombat() then
         ApplyCombatUI()
+        return
+    end
+    if enabled and hidden and (hidden == "spellbook" or IsSpellbookOpen()) then
+        ApplySpellbookUI()
         return
     end
     if enabled and hidden and (hidden == "quest" or IsQuestConversationOpen()) then
@@ -226,7 +233,7 @@ local function HideUI()
     hidden = "idle"
 end
 
--- Share action controls between bag and combat modes. Individual main-bar buttons
+-- Share action controls between bag, spellbook and combat modes. Individual main-bar buttons
 -- are listed because Classic shares their parent with bags and the micro menu.
 local actionFrames = {
     "MultiBarBottomLeft", "MultiBarBottomRight", "MultiBarLeft", "MultiBarRight",
@@ -260,6 +267,13 @@ local function ApplySelectiveUI(mode)
         or (mode == "combat" and combatFrames or actionFrames)
     for _, name in ipairs(modeFrames) do
         visibleFrames[#visibleFrames + 1] = name
+    end
+    -- Compose the spellbook with quest, bag and combat controls when they overlap.
+    if IsSpellbookOpen() then
+        visibleFrames[#visibleFrames + 1] = "SpellBookFrame"
+        if mode == "quest" then
+            for _, name in ipairs(actionFrames) do visibleFrames[#visibleFrames + 1] = name end
+        end
     end
     if mode ~= "quest" and IsQuestConversationOpen() then
         for _, name in ipairs(questFrames) do visibleFrames[#visibleFrames + 1] = name end
@@ -311,6 +325,19 @@ end
 ApplyCombatUI = function() ApplySelectiveUI("combat") end
 ApplyBagUI = function() ApplySelectiveUI("bags") end
 ApplyQuestUI = function() ApplySelectiveUI("quest") end
+ApplySpellbookUI = function() ApplySelectiveUI("spellbook") end
+
+local hookedSpellbook
+local function HookSpellbook()
+    if not SpellBookFrame or hookedSpellbook == SpellBookFrame then return end
+    hookedSpellbook = SpellBookFrame
+    SpellBookFrame:HookScript("OnShow", function()
+        if enabled and hidden then
+            if InCombat() then ApplyCombatUI() else ApplySpellbookUI() end
+        end
+    end)
+end
+HookSpellbook()
 
 local function IsShown(name)
     local frame = _G[name]
@@ -374,6 +401,8 @@ local function KeyboardActivity(_, key)
     if IsControlKeyDown() then binding = "CTRL-" .. binding end
     if IsAltKeyDown() then binding = "ALT-" .. binding end
     local action = GetBindingAction(binding)
+    -- The binding runs after keyboard activity; wait for the panel's OnShow.
+    if action == "TOGGLESPELLBOOK" or action == "TOGGLEPETBOOK" then return end
     if hidden and (action == "INTERACTTARGET" or action == "INTERACTMOUSEOVER") then
         return
     end
@@ -418,6 +447,7 @@ for _, event in ipairs({ "UNIT_HEALTH", "UNIT_MAXHEALTH", "UNIT_POWER_UPDATE",
     controller:RegisterUnitEvent(event, "player")
 end
 controller:SetScript("OnEvent", function(_, event)
+    HookSpellbook()
     -- Quest events can arrive before Blizzard shows the conversation frame.
     if enabled and hidden and not InCombat() then
         if event == "QUEST_DETAIL" or event == "QUEST_COMPLETE"
@@ -455,6 +485,10 @@ controller:SetScript("OnUpdate", function(_, elapsed)
         ApplyCombatUI()
         ApplyBagButtons()
         return
+    elseif hidden and IsSpellbookOpen() then
+        ApplySpellbookUI()
+        ApplyBagButtons()
+        return
     elseif hidden and IsQuestConversationOpen() then
         ApplyQuestUI()
         ApplyBagButtons()
@@ -468,9 +502,11 @@ controller:SetScript("OnUpdate", function(_, elapsed)
         ApplyBagUI()
         ApplyBagButtons()
         return
-    elseif hidden == "bags" then
+    elseif hidden == "bags" or hidden == "spellbook" then
         RestoreUI()
         HideUI()
+        ApplyBagButtons()
+        return
     elseif hidden == "combat" then
         Activity()
     end
