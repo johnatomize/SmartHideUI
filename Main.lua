@@ -177,6 +177,23 @@ local function IsMinimapBranch(region)
     return region == MinimapCluster
 end
 
+-- Breath can occupy any mirror timer slot. Preserve these warning bars even
+-- before they are shown, so submerging while idle never inherits a faded bar.
+-- Blizzard still controls when the timers appear and disappear.
+local function ApplyMirrorTimerUI(keep, ancestors)
+    for index = 1, MIRRORTIMER_NUMTIMERS or 3 do
+        local frame = _G["MirrorTimer" .. index]
+        if frame then
+            keep[frame] = true
+            local parent = frame:GetParent()
+            while parent and parent ~= UIParent do
+                ancestors[parent] = true
+                parent = parent:GetParent()
+            end
+        end
+    end
+end
+
 local function FadeRegion(region, playerAncestors, keepPlayer, keepAuras)
     if region == controller or region == GameTooltip or IsMinimapBranch(region) then return end
     -- Blizzard animates these frames' alpha; hiding them every tick causes flicker.
@@ -206,6 +223,7 @@ HideUI = function()
     -- Preserve the minimap's parent chain without reparenting Blizzard frames.
     local keepPlayer, playerAncestors = NeedsPlayerFrame(), {}
     local keepAuras, hasDebuff = {}, HasPlayerDebuff()
+    ApplyMirrorTimerUI(keepAuras, playerAncestors)
     for _, name in ipairs(auraFrames) do
         local frame = _G[name]
         if frame then
@@ -288,6 +306,7 @@ end
 local function ApplySelectiveUI(mode)
     if hidden ~= mode then RestoreUI() end
     local keep, ancestors = { [controller] = true }, {}
+    ApplyMirrorTimerUI(keep, ancestors)
     -- Equipment comparisons use separate tooltips from the hovered item.
     local visibleFrames = { "GameTooltip", "ShoppingTooltip1", "ShoppingTooltip2" }
     local windowMode = mode == "map" or mode == "questlog"
