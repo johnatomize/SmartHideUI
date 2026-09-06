@@ -1,4 +1,4 @@
-## Interface: 20506
+## Interface: 69546
 ## Title: SmartHideUI
 ## Notes: Addon to intelligently hide the user interface to get a more cinematic experience.
 ## Author: Hallgarden
