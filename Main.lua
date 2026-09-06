@@ -4,6 +4,40 @@ local enabled, delay, lastActivity = true, 3, 0
 local hidden = false
 local originalAlpha = {}
 local ApplyCombatUI
+local bagButtonAlpha = {}
+local bagButtons = {
+    "MainMenuBarBackpackButton", "CharacterBag0Slot", "CharacterBag1Slot",
+    "CharacterBag2Slot", "CharacterBag3Slot", "KeyRingButton",
+}
+
+local function AreBagsOpen()
+    if ContainerFrameCombinedBags and ContainerFrameCombinedBags:IsShown() then return true end
+    for index = 1, 13 do
+        local frame = _G["ContainerFrame" .. index]
+        if frame and frame:IsShown() then return true end
+    end
+    return false
+end
+
+local function ApplyBagButtons()
+    local show = not enabled or AreBagsOpen()
+    for _, name in ipairs(bagButtons) do
+        local button = _G[name]
+        if button then
+            if show then
+                if bagButtonAlpha[button] ~= nil then
+                    button:SetAlpha(bagButtonAlpha[button])
+                    bagButtonAlpha[button] = nil
+                end
+            else
+                if bagButtonAlpha[button] == nil then
+                    bagButtonAlpha[button] = button:GetAlpha()
+                end
+                button:SetAlpha(0)
+            end
+        end
+    end
+end
 
 local function InCombat()
     return InCombatLockdown() or UnitAffectingCombat("player")
@@ -15,6 +49,7 @@ local function RestoreUI()
     end
     wipe(originalAlpha)
     hidden = false
+    ApplyBagButtons()
 end
 
 local function Activity()
@@ -38,7 +73,7 @@ end
 local function FadeRegion(region)
     if region == controller or region == GameTooltip or IsMinimapBranch(region) then return end
     if originalAlpha[region] == nil then
-        originalAlpha[region] = region:GetAlpha()
+        originalAlpha[region] = bagButtonAlpha[region] or region:GetAlpha()
     end
     region:SetAlpha(0)
 end
@@ -78,7 +113,12 @@ end
 ApplyCombatUI = function()
     if hidden ~= "combat" then RestoreUI() end
     local keep, ancestors = { [controller] = true }, {}
-    for _, name in ipairs(combatFrames) do
+    local visibleFrames = {}
+    for _, name in ipairs(combatFrames) do visibleFrames[#visibleFrames + 1] = name end
+    if AreBagsOpen() then
+        for _, name in ipairs(bagButtons) do visibleFrames[#visibleFrames + 1] = name end
+    end
+    for _, name in ipairs(visibleFrames) do
         local region = _G[name]
         if region then
             keep[region] = true
@@ -100,7 +140,7 @@ ApplyCombatUI = function()
             for _, texture in ipairs({ region:GetRegions() }) do Visit(texture) end
         else
             if originalAlpha[region] == nil then
-                originalAlpha[region] = region:GetAlpha()
+                originalAlpha[region] = bagButtonAlpha[region] or region:GetAlpha()
             end
             if region:GetAlpha() ~= 0 then region:SetAlpha(0) end
         end
@@ -126,12 +166,10 @@ local function IsInteracting()
         if IsShown(name) then return true end
     end
     for _, name in ipairs({ "GameMenuFrame", "SettingsPanel", "InterfaceOptionsFrame",
-        "ContainerFrameCombinedBags", "ChatConfigFrame" }) do
+        "ChatConfigFrame" }) do
         if IsShown(name) then return true end
     end
-    for index = 1, 13 do
-        if IsShown("ContainerFrame" .. index) then return true end
-    end
+    if AreBagsOpen() then return true end
     for index = 1, 4 do
         if IsShown("StaticPopup" .. index) then return true end
     end
@@ -140,8 +178,16 @@ local function IsInteracting()
     local foci = GetMouseFoci and GetMouseFoci()
         or (GetMouseFocus and { GetMouseFocus() }) or {}
     for _, focus in ipairs(foci) do
+        local current, hiddenBagButton = focus, false
+        while current do
+            if bagButtonAlpha[current] ~= nil then
+                hiddenBagButton = true
+                break
+            end
+            current = current:GetParent()
+        end
         if focus ~= WorldFrame and focus ~= UIParent and focus ~= controller
-            and focus ~= GameTooltip then
+            and focus ~= GameTooltip and not hiddenBagButton then
             return true
         end
     end
@@ -213,6 +259,7 @@ controller:SetScript("OnUpdate", function(_, elapsed)
     elapsedSinceCheck = 0
     if InCombat() then
         ApplyCombatUI()
+        ApplyBagButtons()
         return
     elseif hidden == "combat" then
         Activity()
@@ -224,6 +271,7 @@ controller:SetScript("OnUpdate", function(_, elapsed)
         -- Include frames created or shown while already idle.
         HideUI()
     end
+    ApplyBagButtons()
 end)
 
 SLASH_SMARTHIDEUI1 = "/shu"
