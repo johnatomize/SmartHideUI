@@ -3,6 +3,7 @@ local controller = CreateFrame("Frame", "SmartHideUIController")
 local enabled, delay, lastActivity = true, 3, 0
 local hidden = false
 local originalAlpha = {}
+local unsupportedAlpha = setmetatable({}, { __mode = "k" })
 local ApplyCombatUI
 local bagButtonAlpha = {}
 local bagButtons = {
@@ -45,7 +46,7 @@ end
 
 local function RestoreUI()
     for region, alpha in pairs(originalAlpha) do
-        region:SetAlpha(alpha)
+        pcall(region.SetAlpha, region, alpha)
     end
     wipe(originalAlpha)
     hidden = false
@@ -61,6 +62,33 @@ local function Activity()
     if hidden then RestoreUI() end
 end
 
+-- Some UIParent children expose alpha methods but reject calls on their native
+-- object. Probe once, then skip them instead of aborting every update tick.
+local function FadeAlpha(region)
+    if unsupportedAlpha[region] then return end
+    if region.IsForbidden and region:IsForbidden() then return end
+    local ok, alpha = pcall(region.GetAlpha, region)
+    if not ok or type(alpha) ~= "number" then
+        unsupportedAlpha[region] = true
+        return
+    end
+    if originalAlpha[region] == nil then
+        originalAlpha[region] = bagButtonAlpha[region] or alpha
+    end
+    if alpha ~= 0 and not pcall(region.SetAlpha, region, 0) then
+        originalAlpha[region] = nil
+        unsupportedAlpha[region] = true
+    end
+end
+
+local function IsChatting()
+    for index = 1, NUM_CHAT_WINDOWS or 10 do
+        local editBox = _G["ChatFrame" .. index .. "EditBox"]
+        if editBox and editBox:HasFocus() then return true end
+    end
+    return false
+end
+
 local function IsMinimapBranch(region)
     local current = Minimap
     while current do
@@ -74,14 +102,12 @@ local function FadeRegion(region)
     if region == controller or region == GameTooltip or IsMinimapBranch(region) then return end
     -- Blizzard animates these frames' alpha; hiding them every tick causes flicker.
     if region == ZoneTextFrame or region == SubZoneTextFrame then return end
-    if originalAlpha[region] == nil then
-        originalAlpha[region] = bagButtonAlpha[region] or region:GetAlpha()
-    end
-    region:SetAlpha(0)
+    FadeAlpha(region)
 end
 
 local function HideUI()
     if hidden == "combat" then RestoreUI() end
+    hidden = "idle"
     -- Keep UIParent shown so protected action buttons and bindings still work.
     -- Preserve the minimap's parent chain without reparenting Blizzard frames.
     for _, child in ipairs({ UIParent:GetChildren() }) do FadeRegion(child) end
@@ -118,6 +144,14 @@ ApplyCombatUI = function()
     local keep, ancestors = { [controller] = true }, {}
     local visibleFrames = {}
     for _, name in ipairs(combatFrames) do visibleFrames[#visibleFrames + 1] = name end
+    if IsChatting() then
+        for index = 1, NUM_CHAT_WINDOWS or 10 do
+            for _, suffix in ipairs({ "", "Tab", "EditBox", "ButtonFrame" }) do
+                visibleFrames[#visibleFrames + 1] = "ChatFrame" .. index .. suffix
+            end
+        end
+        visibleFrames[#visibleFrames + 1] = "GeneralDockManager"
+    end
     if AreBagsOpen() then
         for _, name in ipairs(bagButtons) do visibleFrames[#visibleFrames + 1] = name end
     end
@@ -135,17 +169,14 @@ ApplyCombatUI = function()
     local function Visit(region)
         if keep[region] or ancestors[region] then
             if originalAlpha[region] ~= nil then
-                region:SetAlpha(originalAlpha[region])
+                pcall(region.SetAlpha, region, originalAlpha[region])
                 originalAlpha[region] = nil
             end
             if keep[region] then return end
             for _, child in ipairs({ region:GetChildren() }) do Visit(child) end
             for _, texture in ipairs({ region:GetRegions() }) do Visit(texture) end
         else
-            if originalAlpha[region] == nil then
-                originalAlpha[region] = bagButtonAlpha[region] or region:GetAlpha()
-            end
-            if region:GetAlpha() ~= 0 then region:SetAlpha(0) end
+            FadeAlpha(region)
         end
     end
     for _, child in ipairs({ UIParent:GetChildren() }) do Visit(child) end
@@ -159,6 +190,7 @@ local function IsShown(name)
 end
 
 local function IsInteracting()
+    if IsChatting() then return true end
     if InCombatLockdown() or UnitAffectingCombat("player")
         or UnitCastingInfo("player") or UnitChannelInfo("player")
         or (GetCurrentKeyBoardFocus and GetCurrentKeyBoardFocus()) then
