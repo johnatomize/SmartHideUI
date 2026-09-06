@@ -5,6 +5,7 @@ local hidden = false
 local originalAlpha = {}
 local unsupportedAlpha = setmetatable({}, { __mode = "k" })
 local ApplyCombatUI, ApplyBagUI, ApplyQuestUI, ApplySpellbookUI
+local HideUI
 local function IsSpellbookOpen()
     return SpellBookFrame and SpellBookFrame:IsShown()
 end
@@ -112,6 +113,10 @@ local function Activity()
         ApplyBagUI()
         return
     end
+    if enabled and hidden == "combat" then
+        HideUI()
+        return
+    end
     if hidden then RestoreUI() end
 end
 
@@ -173,7 +178,7 @@ local function FadeRegion(region, playerAncestors, keepPlayer, keepAuras)
 end
 
 local hookedPlayerFrame
-local function HideUI()
+HideUI = function()
     if hidden == "combat" then RestoreUI() end
     hidden = "idle"
     -- Keep UIParent shown so protected action buttons and bindings still work.
@@ -393,7 +398,9 @@ local movementActions = {
     SITSTAND = true, ASCEND = true, DESCEND = true,
 }
 local movementKeysDown = {}
+local targetClearingKeysDown = {}
 local function KeyboardActivity(_, key)
+    if targetClearingKeysDown[key] then return end
     if key == "LSHIFT" or key == "RSHIFT" or key == "LCTRL" or key == "RCTRL"
         or key == "LALT" or key == "RALT" then return end
     local binding = key
@@ -401,6 +408,12 @@ local function KeyboardActivity(_, key)
     if IsControlKeyDown() then binding = "CTRL-" .. binding end
     if IsAltKeyDown() then binding = "ALT-" .. binding end
     local action = GetBindingAction(binding)
+    -- Escape clears the target before opening the menu. Suppress both key edges,
+    -- since the target may already be gone when the key is released.
+    if hidden and action == "TOGGLEGAMEMENU" and UnitExists("target") then
+        targetClearingKeysDown[key] = true
+        return
+    end
     -- The binding runs after keyboard activity; wait for the panel's OnShow.
     if action == "TOGGLESPELLBOOK" or action == "TOGGLEPETBOOK" then return end
     if hidden and (action == "INTERACTTARGET" or action == "INTERACTMOUSEOVER") then
@@ -421,6 +434,10 @@ controller:EnableKeyboard(true)
 controller:SetPropagateKeyboardInput(true)
 controller:SetScript("OnKeyDown", KeyboardActivity)
 controller:SetScript("OnKeyUp", function(self, key)
+    if targetClearingKeysDown[key] then
+        targetClearingKeysDown[key] = nil
+        return
+    end
     if movementKeysDown[key] then
         movementKeysDown[key] = nil
         return
@@ -448,6 +465,8 @@ for _, event in ipairs({ "UNIT_HEALTH", "UNIT_MAXHEALTH", "UNIT_POWER_UPDATE",
 end
 controller:SetScript("OnEvent", function(_, event)
     HookSpellbook()
+    -- Manual deselection and automatic target loss on death are not activity.
+    if event == "PLAYER_TARGET_CHANGED" and not UnitExists("target") then return end
     -- Quest events can arrive before Blizzard shows the conversation frame.
     if enabled and hidden and not InCombat() then
         if event == "QUEST_DETAIL" or event == "QUEST_COMPLETE"
