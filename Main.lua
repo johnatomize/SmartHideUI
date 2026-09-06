@@ -72,6 +72,8 @@ end
 
 local function FadeRegion(region)
     if region == controller or region == GameTooltip or IsMinimapBranch(region) then return end
+    -- Blizzard animates these frames' alpha; hiding them every tick causes flicker.
+    if region == ZoneTextFrame or region == SubZoneTextFrame then return end
     if originalAlpha[region] == nil then
         originalAlpha[region] = bagButtonAlpha[region] or region:GetAlpha()
     end
@@ -91,6 +93,7 @@ end
 -- are listed because Classic shares their parent with bags and the micro menu.
 local combatFrames = {
     "GameTooltip",
+    "ZoneTextFrame", "SubZoneTextFrame",
     "PlayerFrame", "TargetFrame", "BuffFrame", "DebuffFrame", "TemporaryEnchantFrame",
     "MultiBarBottomLeft", "MultiBarBottomRight", "MultiBarLeft", "MultiBarRight",
     "MultiBar5", "MultiBar6", "MultiBar7", "PetActionBarFrame", "PetActionBar",
