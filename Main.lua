@@ -133,6 +133,12 @@ local function Activity()
         ApplyBagUI()
         return
     end
+    -- Opening objects uses a cast. Keep the current hidden policy while its
+    -- progress runs, including activity detected by the update loop.
+    if enabled and hidden and (UnitCastingInfo("player") or UnitChannelInfo("player")) then
+        HideUI()
+        return
+    end
     if enabled and (hidden == "combat" or hidden == "map" or hidden == "questlog"
         or hidden == "loot") then
         HideUI()
@@ -194,6 +200,21 @@ local function ApplyMirrorTimerUI(keep, ancestors)
     end
 end
 
+local function ApplyCastingUI(keep, ancestors)
+    -- Preserve the bar before OnShow; Blizzard owns its progress and fade-out.
+    for _, name in ipairs({ "CastingBarFrame", "PlayerCastingBarFrame" }) do
+        local frame = _G[name]
+        if frame then
+            keep[frame] = true
+            local parent = frame:GetParent()
+            while parent and parent ~= UIParent do
+                ancestors[parent] = true
+                parent = parent:GetParent()
+            end
+        end
+    end
+end
+
 local function FadeRegion(region, playerAncestors, keepPlayer, keepAuras)
     if region == controller or region == GameTooltip or IsMinimapBranch(region) then return end
     -- Blizzard animates these frames' alpha; hiding them every tick causes flicker.
@@ -217,6 +238,10 @@ end
 
 local hookedPlayerFrame
 HideUI = function()
+    if IsQuestConversationOpen() then
+        ApplyQuestUI()
+        return
+    end
     if hidden == "combat" then RestoreUI() end
     hidden = "idle"
     -- Keep UIParent shown so protected action buttons and bindings still work.
@@ -224,6 +249,7 @@ HideUI = function()
     local keepPlayer, playerAncestors = NeedsPlayerFrame(), {}
     local keepAuras, hasDebuff = {}, HasPlayerDebuff()
     ApplyMirrorTimerUI(keepAuras, playerAncestors)
+    ApplyCastingUI(keepAuras, playerAncestors)
     for _, name in ipairs(auraFrames) do
         local frame = _G[name]
         if frame then
@@ -303,10 +329,34 @@ for index = 1, 3 do
     combatFrames[#combatFrames + 1] = "TempEnchant" .. index
 end
 
+-- NPC reward tooltips may include additional comparison/addon tooltips. Keep
+-- every tooltip branch, including its ancestors, without touching its alpha
+-- again once restored. Blizzard owns tooltip visibility and fade animations.
+local function ApplyQuestTooltips(keep, ancestors)
+    local function Visit(frame)
+        if frame.IsForbidden and frame:IsForbidden() then return end
+        if frame:IsObjectType("GameTooltip") then
+            keep[frame] = true
+            local parent = frame:GetParent()
+            while parent and parent ~= UIParent do
+                ancestors[parent] = true
+                parent = parent:GetParent()
+            end
+            return
+        end
+        for _, child in ipairs({ frame:GetChildren() }) do Visit(child) end
+    end
+    Visit(UIParent)
+end
+
 local function ApplySelectiveUI(mode)
     if hidden ~= mode then RestoreUI() end
     local keep, ancestors = { [controller] = true }, {}
     ApplyMirrorTimerUI(keep, ancestors)
+    ApplyCastingUI(keep, ancestors)
+    if mode == "quest" or IsQuestConversationOpen() then
+        ApplyQuestTooltips(keep, ancestors)
+    end
     -- Equipment comparisons use separate tooltips from the hovered item.
     local visibleFrames = { "GameTooltip", "ShoppingTooltip1", "ShoppingTooltip2" }
     local windowMode = mode == "map" or mode == "questlog"
@@ -592,6 +642,13 @@ controller:SetScript("OnEvent", function(_, event)
     HookSpellbook()
     HookLoot()
     if event == "ADDON_LOADED" then return end
+    -- Cast completion can precede LOOT_OPENED, and cancelled casts may never
+    -- open loot. Neither case should restore the HUD in that gap.
+    if enabled and hidden and event:match("^UNIT_SPELLCAST_") then
+        if InCombat() then ApplyCombatUI()
+        elseif hidden == "idle" then HideUI() end
+        return
+    end
     -- Record loot before Blizzard shows its frame; close without restoring the HUD.
     if event == "LOOT_OPENED" then lootOpen = true end
     -- OnHide and LOOT_CLOSED may both fire, in either order.
