@@ -4,7 +4,7 @@ local enabled, delay, lastActivity = true, 3, 0
 local hidden = false
 local originalAlpha = {}
 local unsupportedAlpha = setmetatable({}, { __mode = "k" })
-local ApplyCombatUI
+local ApplyCombatUI, ApplyBagUI
 local bagButtonAlpha = {}
 local bagButtons = {
     "MainMenuBarBackpackButton", "CharacterBag0Slot", "CharacterBag1Slot",
@@ -87,6 +87,10 @@ local function Activity()
     lastActivity = GetTime()
     if enabled and InCombat() then
         ApplyCombatUI()
+        return
+    end
+    if enabled and AreBagsOpen() then
+        ApplyBagUI()
         return
     end
     if hidden then RestoreUI() end
@@ -210,12 +214,9 @@ local function HideUI()
     hidden = "idle"
 end
 
--- Keep only these Blizzard controls during combat. Individual main-bar buttons
+-- Share action controls between bag and combat modes. Individual main-bar buttons
 -- are listed because Classic shares their parent with bags and the micro menu.
-local combatFrames = {
-    "GameTooltip",
-    "ZoneTextFrame", "SubZoneTextFrame",
-    "PlayerFrame", "TargetFrame", "BuffFrame", "DebuffFrame", "TemporaryEnchantFrame",
+local actionFrames = {
     "MultiBarBottomLeft", "MultiBarBottomRight", "MultiBarLeft", "MultiBarRight",
     "MultiBar5", "MultiBar6", "MultiBar7", "PetActionBarFrame", "PetActionBar",
     "StanceBarFrame", "StanceBar", "PossessBarFrame", "PossessActionBar",
@@ -223,8 +224,13 @@ local combatFrames = {
     "ActionBarUpButton", "ActionBarDownButton", "MainMenuBarPageNumber",
 }
 for index = 1, 12 do
-    combatFrames[#combatFrames + 1] = "ActionButton" .. index
+    actionFrames[#actionFrames + 1] = "ActionButton" .. index
 end
+local combatFrames = {
+    "GameTooltip", "ZoneTextFrame", "SubZoneTextFrame",
+    "PlayerFrame", "TargetFrame", "BuffFrame", "DebuffFrame", "TemporaryEnchantFrame",
+}
+for _, name in ipairs(actionFrames) do combatFrames[#combatFrames + 1] = name end
 -- Older Classic layouts may parent aura buttons directly to UIParent.
 for index = 1, 32 do
     combatFrames[#combatFrames + 1] = "BuffButton" .. index
@@ -234,12 +240,14 @@ for index = 1, 3 do
     combatFrames[#combatFrames + 1] = "TempEnchant" .. index
 end
 
-ApplyCombatUI = function()
-    if hidden ~= "combat" then RestoreUI() end
+local function ApplySelectiveUI(mode)
+    if hidden ~= mode then RestoreUI() end
     local keep, ancestors = { [controller] = true }, {}
-    local visibleFrames = {}
-    for _, name in ipairs(combatFrames) do visibleFrames[#visibleFrames + 1] = name end
-    if IsChatting() then
+    local visibleFrames = { "GameTooltip" }
+    for _, name in ipairs(mode == "combat" and combatFrames or actionFrames) do
+        visibleFrames[#visibleFrames + 1] = name
+    end
+    if mode == "combat" and IsChatting() then
         for index = 1, NUM_CHAT_WINDOWS or 10 do
             for _, suffix in ipairs({ "", "Tab", "EditBox", "ButtonFrame" }) do
                 visibleFrames[#visibleFrames + 1] = "ChatFrame" .. index .. suffix
@@ -249,6 +257,10 @@ ApplyCombatUI = function()
     end
     if AreBagsOpen() then
         for _, name in ipairs(bagButtons) do visibleFrames[#visibleFrames + 1] = name end
+        visibleFrames[#visibleFrames + 1] = "ContainerFrameCombinedBags"
+        for index = 1, 13 do
+            visibleFrames[#visibleFrames + 1] = "ContainerFrame" .. index
+        end
     end
     for _, name in ipairs(visibleFrames) do
         local region = _G[name]
@@ -276,8 +288,11 @@ ApplyCombatUI = function()
     end
     for _, child in ipairs({ UIParent:GetChildren() }) do Visit(child) end
     for _, region in ipairs({ UIParent:GetRegions() }) do Visit(region) end
-    hidden = "combat"
+    hidden = mode
 end
+
+ApplyCombatUI = function() ApplySelectiveUI("combat") end
+ApplyBagUI = function() ApplySelectiveUI("bags") end
 
 local function IsShown(name)
     local frame = _G[name]
@@ -340,7 +355,12 @@ local function KeyboardActivity(_, key)
     if IsShiftKeyDown() then binding = "SHIFT-" .. binding end
     if IsControlKeyDown() then binding = "CTRL-" .. binding end
     if IsAltKeyDown() then binding = "ALT-" .. binding end
-    if movementActions[GetBindingAction(binding)] then
+    local action = GetBindingAction(binding)
+    -- Let the bag update select visibility after the binding opens/closes it.
+    if action == "TOGGLEBACKPACK" or action == "OPENALLBAGS"
+        or action == "TOGGLEBAG1" or action == "TOGGLEBAG2"
+        or action == "TOGGLEBAG3" or action == "TOGGLEBAG4" then return end
+    if movementActions[action] then
         movementKeysDown[key] = true
         return
     end
@@ -399,6 +419,13 @@ controller:SetScript("OnUpdate", function(_, elapsed)
         ApplyCombatUI()
         ApplyBagButtons()
         return
+    elseif AreBagsOpen() then
+        ApplyBagUI()
+        ApplyBagButtons()
+        return
+    elseif hidden == "bags" then
+        RestoreUI()
+        HideUI()
     elseif hidden == "combat" then
         Activity()
     end
