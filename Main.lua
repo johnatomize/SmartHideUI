@@ -639,11 +639,12 @@ local function KeyboardActivity(_, key)
     if IsControlKeyDown() then binding = "CTRL-" .. binding end
     if IsAltKeyDown() then binding = "ALT-" .. binding end
     local action = GetBindingAction(binding)
-    -- Escape can close a window or clear the target. Suppress both key edges,
-    -- since the window or target may already be gone when the key is released.
+    -- Escape can close a window, clear the target, or cancel gathering. Suppress
+    -- both key edges: the window, target, or cast may be gone on key release.
     if hidden and action == "TOGGLEGAMEMENU"
         and (lootOpen or IsMapOpen() or IsQuestLogOpen() or IsTradeSkillOpen()
-            or hidden == "tradeskill" or UnitExists("target")) then
+            or hidden == "tradeskill" or UnitExists("target")
+            or UnitCastingInfo("player") or UnitChannelInfo("player")) then
         targetClearingKeysDown[key] = true
         return
     end
@@ -705,6 +706,10 @@ controller:SetScript("OnEvent", function(_, event)
     HookLoot()
     HookTradeSkills()
     if event == "ADDON_LOADED" then return end
+    -- Gathering loot changes inventory even with every bag closed. The delayed
+    -- notification can arrive after LOOT_CLOSED; it is not player activity.
+    -- Open bags still use their policy, and OnUpdate handles closing them.
+    if event == "BAG_UPDATE_DELAYED" and not AreBagsOpen() then return end
     if event == "TRADE_SKILL_CLOSE" or event == "CRAFT_CLOSE" then
         TradeSkillClosed()
         return
