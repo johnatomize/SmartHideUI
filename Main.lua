@@ -218,6 +218,9 @@ end
 -- Some UIParent children expose alpha methods but reject calls on their native
 -- object. Probe once, then skip them instead of aborting every update tick.
 local function FadeAlpha(region)
+    -- Blizzard owns area-text fades in every mode, including open windows.
+    -- Never save or overwrite their animated alpha on an update tick.
+    if region == ZoneTextFrame or region == SubZoneTextFrame then return end
     if unsupportedAlpha[region] then return end
     if region.IsForbidden and region:IsForbidden() then return end
     local ok, alpha = pcall(region.GetAlpha, region)
@@ -301,8 +304,6 @@ end
 
 local function FadeRegion(region, playerAncestors, keepPlayer, keepAuras)
     if region == controller or region == GameTooltip then return end
-    -- Blizzard animates these frames' alpha; hiding them every tick causes flicker.
-    if region == ZoneTextFrame or region == SubZoneTextFrame then return end
     if (keepPlayer and region == PlayerFrame) or playerAncestors[region] or keepAuras[region] then
         if originalAlpha[region] ~= nil then
             pcall(region.SetAlpha, region, originalAlpha[region])

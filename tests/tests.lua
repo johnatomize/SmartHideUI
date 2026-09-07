@@ -58,6 +58,8 @@ local function setup(visible)
     frame("ChatFrame1ButtonFrame", env.UIParent)
     frame("GeneralDockManager", env.UIParent)
     frame("Hud", env.UIParent, true, 0.65)
+    frame("ZoneTextFrame", env.UIParent, false, 0)
+    frame("SubZoneTextFrame", env.UIParent, false, 0)
     frame("TrackerParent", env.UIParent, true, 0.9)
     frame("TrackerSibling", env.TrackerParent)
     frame("QuestWatchFrame", env.TrackerParent, false, 0.8)
@@ -688,6 +690,46 @@ for _, visible in ipairs({ false, true }) do
         e.SlashCmdList.SMARTHIDEUI("off")
         assert(e.StackSplitFrame.alpha == 0.85); s.visible()
     end)
+end
+
+for _, panel in ipairs({ "ContainerFrame1", "QuestLogFrame", "SpellBookFrame",
+    "WorldMapFrame", "TradeSkillFrame", "QuestFrame", "LootFrame", "CharacterFrame" }) do
+    for _, visible in ipairs({ false, true }) do
+        test("area text animation with " .. panel .. " visible=" .. tostring(visible), function()
+            local s, e = setup(visible)
+            local zone, subzone = e.ZoneTextFrame, e.SubZoneTextFrame
+            -- Animate before entry to catch stale alpha restoration on transitions.
+            zone:SetAlpha(0.25); subzone:SetAlpha(0.35)
+            -- Generic panels compose with bag mode; combat alone filters them.
+            if panel == "CharacterFrame" then e.ContainerFrame1:Show() end
+            if panel == "LootFrame" then s.loot() else e[panel]:Show(); s.tick() end
+            assert(zone.alpha == 0.25 and subzone.alpha == 0.35)
+            zone:Show(); subzone:Show()
+            local function animate()
+                for _, alpha in ipairs({ 0.1, 0.6, 1, 0.4, 0 }) do
+                    zone:SetAlpha(alpha); subzone:SetAlpha(alpha / 2)
+                    s.tick()
+                    assert(zone.alpha == alpha and subzone.alpha == alpha / 2,
+                        "addon overwrote Blizzard's area-text animation")
+                end
+            end
+            animate()
+            s.combat = true; s.event("PLAYER_REGEN_DISABLED"); animate(); s.hidden()
+            assert(e[panel].alpha == 1, "open window was faded")
+            s.combat = false; s.event("PLAYER_REGEN_ENABLED")
+            zone:SetAlpha(0.45); subzone:SetAlpha(0.2)
+            if panel == "LootFrame" then s.close() else e[panel]:Hide(); s.tick() end
+            if panel == "CharacterFrame" then e.ContainerFrame1:Hide(); s.tick() end
+            assert(zone.alpha == 0.45 and subzone.alpha == 0.2)
+            s.tick(4); animate(); s.hidden()
+            for _, command in ipairs({ "show", "off" }) do
+                zone:SetAlpha(0.3); subzone:SetAlpha(0.7)
+                e.SlashCmdList.SMARTHIDEUI(command)
+                assert(zone.alpha == 0.3 and subzone.alpha == 0.7)
+                animate(); s.visible()
+            end
+        end)
+    end
 end
 
 for _, failure in ipairs(failures) do print("FAIL " .. failure) end
