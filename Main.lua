@@ -7,6 +7,8 @@ local unsupportedAlpha = setmetatable({}, { __mode = "k" })
 local ApplyCombatUI, ApplyBagUI, ApplyQuestUI, ApplySpellbookUI, ApplyMapUI
 local ApplyQuestLogUI, ApplyLootUI, ApplyTradeSkillUI, ApplyTargetUI, ApplyChatUI
 local lootOpen = false
+local merchantOpen = false
+local ApplyMerchantUI
 local questTrackerVisibleUntil = 0
 local function NeedsQuestTrackerUI()
     return GetTime() < questTrackerVisibleUntil
@@ -167,6 +169,10 @@ local function Activity()
         if hidden then ApplyLootUI() end
         return
     end
+    if enabled and hidden and merchantOpen then
+        ApplyMerchantUI()
+        return
+    end
     if enabled and hidden and (IsTradeSkillOpen()
         or (hidden == "tradeskill" and HasOpenPanel())) then
         ApplyTradeSkillUI()
@@ -208,7 +214,8 @@ local function Activity()
         return
     end
     if enabled and (hidden == "combat" or hidden == "map" or hidden == "questlog"
-        or hidden == "loot" or hidden == "tradeskill" or hidden == "target" or hidden == "chat") then
+        or hidden == "loot" or hidden == "tradeskill" or hidden == "target" or hidden == "chat"
+        or hidden == "merchant") then
         HideUI()
         return
     end
@@ -323,6 +330,10 @@ end
 
 local hookedPlayerFrame
 HideUI = function()
+    if merchantOpen then
+        ApplyMerchantUI()
+        return
+    end
     if IsTradeSkillOpen() then
         ApplyTradeSkillUI()
         return
@@ -462,13 +473,17 @@ local function ApplySelectiveUI(mode)
         for _, name in ipairs(auraFrames) do visibleFrames[#visibleFrames + 1] = name end
     end
     if mode == "combat" then ApplyPartyInviteUI(visibleFrames) end
-    local windowMode = mode == "map" or mode == "questlog" or mode == "tradeskill"
+    local windowMode = mode == "map" or mode == "questlog" or mode == "tradeskill" or mode == "merchant"
     local modeFrames = (windowMode or mode == "target" or mode == "chat") and {}
         or mode == "loot" and { "LootFrame" }
         or mode == "quest" and questFrames
         or (mode == "combat" and combatFrames or actionFrames)
     for _, name in ipairs(modeFrames) do
         visibleFrames[#visibleFrames + 1] = name
+    end
+    if merchantOpen and mode ~= "loot" then
+        visibleFrames[#visibleFrames + 1] = "MerchantFrame"
+        visibleFrames[#visibleFrames + 1] = "StackSplitFrame"
     end
     -- Player targets need their portrait; enemies also need combat controls.
     if mode ~= "combat" and HasPortraitTarget() then
@@ -581,6 +596,28 @@ ApplyLootUI = function() ApplySelectiveUI("loot") end
 ApplyTradeSkillUI = function() ApplySelectiveUI("tradeskill") end
 ApplyTargetUI = function() ApplySelectiveUI("target") end
 ApplyChatUI = function() ApplySelectiveUI("chat") end
+ApplyMerchantUI = function() ApplySelectiveUI("merchant") end
+
+-- Track the event before Blizzard shows the window or opens bags. Both close
+-- notifications may arrive; neither should become generic full-UI activity.
+local function MerchantClosed()
+    if not merchantOpen then return end
+    merchantOpen = false
+    if enabled and hidden then
+        if hidden == "idle" then HideUI() else Activity() end
+    end
+end
+local hookedMerchant
+local function HookMerchant()
+    if not MerchantFrame or hookedMerchant == MerchantFrame then return end
+    hookedMerchant = MerchantFrame
+    MerchantFrame:HookScript("OnShow", function()
+        merchantOpen = true
+        if enabled and hidden then Activity() end
+    end)
+    MerchantFrame:HookScript("OnHide", MerchantClosed)
+end
+HookMerchant()
 
 local hookedChatEdits = setmetatable({}, { __mode = "k" })
 local function HookChatEdits()
@@ -838,7 +875,7 @@ for _, event in ipairs({
     "BAG_UPDATE_DELAYED", "LOOT_OPENED", "LOOT_CLOSED", "QUEST_DETAIL",
     "QUEST_COMPLETE", "QUEST_GREETING", "QUEST_PROGRESS", "GOSSIP_SHOW",
     "QUEST_WATCH_UPDATE",
-    "MERCHANT_SHOW", "PLAYER_EQUIPMENT_CHANGED",
+    "MERCHANT_SHOW", "MERCHANT_CLOSED", "PLAYER_EQUIPMENT_CHANGED",
     "TRADE_SKILL_SHOW", "TRADE_SKILL_CLOSE", "CRAFT_SHOW", "CRAFT_CLOSE",
     "PLAYER_DEAD", "PLAYER_ALIVE", "PLAYER_UNGHOST",
     "CHAT_MSG_WHISPER", "CHAT_MSG_BN_WHISPER", "CHAT_MSG_SAY",
@@ -859,6 +896,15 @@ controller:SetScript("OnEvent", function(_, event)
     HookTradeSkills()
     HookPartyPopups()
     HookChatEdits()
+    HookMerchant()
+    if event == "MERCHANT_SHOW" then
+        merchantOpen = true
+        if enabled and hidden then Activity() end
+        return
+    elseif event == "MERCHANT_CLOSED" then
+        MerchantClosed()
+        return
+    end
     -- Unlike QUEST_LOG_UPDATE, this event reports objective progress rather
     -- than general log refreshes. Do not count it as full-UI activity.
     if event == "QUEST_WATCH_UPDATE" then
@@ -869,7 +915,10 @@ controller:SetScript("OnEvent", function(_, event)
         end
         return
     end
-    if event == "PLAYER_LEAVING_WORLD" then questTrackerVisibleUntil = 0 end
+    if event == "PLAYER_LEAVING_WORLD" then
+        questTrackerVisibleUntil = 0
+        merchantOpen = false
+    end
     if event == "CHAT_MSG_WHISPER" or event == "CHAT_MSG_BN_WHISPER"
         or event == "CHAT_MSG_SAY" then
         if enabled then
@@ -954,6 +1003,10 @@ controller:SetScript("OnUpdate", function(_, elapsed)
         if hidden then ApplyLootUI() end
         ApplyBagButtons()
         return
+    elseif hidden and merchantOpen then
+        ApplyMerchantUI()
+        ApplyBagButtons()
+        return
     elseif hidden and (IsTradeSkillOpen()
         or (hidden == "tradeskill" and HasOpenPanel())) then
         ApplyTradeSkillUI()
@@ -994,7 +1047,7 @@ controller:SetScript("OnUpdate", function(_, elapsed)
         return
     elseif hidden == "bags" or hidden == "spellbook" or hidden == "map"
         or hidden == "questlog" or hidden == "loot" or hidden == "tradeskill"
-        or hidden == "target" or hidden == "chat" then
+        or hidden == "target" or hidden == "chat" or hidden == "merchant" then
         RestoreUI()
         HideUI()
         ApplyBagButtons()

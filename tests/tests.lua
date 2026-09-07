@@ -672,6 +672,41 @@ test("quest progress preserves visible entry and manual overrides", function()
     end
 end)
 
+for _, eventFirst in ipairs({ false, true }) do
+    test("vendor entry and close ordering eventFirst=" .. tostring(eventFirst), function()
+        local s, e = setup()
+        s.key("OnKeyDown", "INTERACTTARGET"); s.hidden()
+        if eventFirst then s.event("MERCHANT_SHOW"); s.hidden(); s.tick(); s.hidden() end
+        e.MerchantFrame:Show(); s.hidden()
+        s.event("MERCHANT_SHOW"); s.hidden()
+        assert(e.MerchantFrame.alpha == 1)
+        s.key("OnKeyUp", "INTERACTTARGET"); s.tick(); s.hidden()
+        s.key("OnKeyDown", "UNBOUND"); s.hidden()
+        assert(e.MainMenuBar.alpha == 0 or e.ActionButton1.alpha == 0)
+        e.ContainerFrame1:Show(); s.tick(); s.hidden()
+        assert(e.ActionButton1.alpha == 0.8 and e.ContainerFrame1.alpha == 1)
+        e.ContainerFrame1:Hide(); s.tick(); s.hidden()
+        s.combat = true; s.event("PLAYER_REGEN_DISABLED"); s.hidden()
+        assert(e.MerchantFrame.alpha == 1 and e.ActionButton1.alpha == 0.8)
+        s.combat = false; s.event("PLAYER_REGEN_ENABLED"); s.hidden()
+        if eventFirst then s.event("MERCHANT_CLOSED"); s.hidden() end
+        e.MerchantFrame:Hide(); s.hidden()
+        s.event("MERCHANT_CLOSED"); s.tick(); s.hidden()
+        e.SlashCmdList.SMARTHIDEUI("off"); s.visible()
+        assert(e.MerchantFrame.alpha == 1)
+    end)
+end
+
+test("vendor without bags preserves visible entry and overrides", function()
+    local s, e = setup(true)
+    s.event("MERCHANT_SHOW"); e.MerchantFrame:Show(); s.tick(4); s.visible()
+    for _, command in ipairs({ "show", "off" }) do
+        e.SlashCmdList.SMARTHIDEUI(command)
+        e.MerchantFrame:Hide(); s.event("MERCHANT_CLOSED")
+        s.event("MERCHANT_SHOW"); e.MerchantFrame:Show(); s.tick(4); s.visible()
+    end
+end)
+
 for _, visible in ipairs({ false, true }) do
     test("vendor quantity picker with visible entry " .. tostring(visible), function()
         local s, e = setup(visible)
