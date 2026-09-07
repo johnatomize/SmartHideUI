@@ -392,6 +392,16 @@ local function ApplyQuestTooltips(keep, ancestors)
     Visit(UIParent)
 end
 
+local function ApplyPartyInviteUI(visibleFrames)
+    for index = 1, STATICPOPUP_NUMDIALOGS or 4 do
+        local name = "StaticPopup" .. index
+        local frame = _G[name]
+        if frame and frame:IsShown() and frame.which == "PARTY_INVITE" then
+            visibleFrames[#visibleFrames + 1] = name
+        end
+    end
+end
+
 local function ApplySelectiveUI(mode)
     if hidden ~= mode then RestoreUI() end
     local keep, ancestors = { [controller] = true }, {}
@@ -402,6 +412,7 @@ local function ApplySelectiveUI(mode)
     end
     -- Equipment comparisons use separate tooltips from the hovered item.
     local visibleFrames = { "GameTooltip", "ShoppingTooltip1", "ShoppingTooltip2" }
+    if mode == "combat" then ApplyPartyInviteUI(visibleFrames) end
     local windowMode = mode == "map" or mode == "questlog" or mode == "tradeskill"
     local modeFrames = windowMode and {}
         or mode == "loot" and { "LootFrame" }
@@ -514,6 +525,25 @@ ApplyQuestLogUI = function() ApplySelectiveUI("questlog") end
 ApplyLootUI = function() ApplySelectiveUI("loot") end
 ApplyTradeSkillUI = function() ApplySelectiveUI("tradeskill") end
 ApplyTargetUI = function() ApplySelectiveUI("target") end
+
+-- The invite event can precede Blizzard showing or assigning a popup slot.
+-- Refresh on the actual frame transition so a previously faded slot is usable
+-- immediately, and closing it keeps the remaining combat policy in effect.
+local hookedPartyPopups = setmetatable({}, { __mode = "k" })
+local function HookPartyPopups()
+    for index = 1, STATICPOPUP_NUMDIALOGS or 4 do
+        local frame = _G["StaticPopup" .. index]
+        if frame and not hookedPartyPopups[frame] then
+            hookedPartyPopups[frame] = true
+            local function Refresh()
+                if enabled and InCombat() then ApplyCombatUI() end
+            end
+            frame:HookScript("OnShow", Refresh)
+            frame:HookScript("OnHide", Refresh)
+        end
+    end
+end
+HookPartyPopups()
 
 local function TradeSkillClosed()
     if not enabled or not hidden then return end
@@ -734,6 +764,7 @@ controller:SetScript("OnEvent", function(_, event)
     HookSpellbook()
     HookLoot()
     HookTradeSkills()
+    HookPartyPopups()
     if event == "ADDON_LOADED" then return end
     -- Gathering loot changes inventory even with every bag closed. The delayed
     -- notification can arrive after LOOT_CLOSED; it is not player activity.

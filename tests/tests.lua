@@ -60,6 +60,12 @@ local function setup(visible)
     frame("CastingBarFrame", env.CastParent, false, 0.75)
     frame("PlayerCastingBarFrame", env.CastParent, false, 0.6)
     frame("CastSibling", env.CastParent)
+    frame("PopupParent", env.UIParent, true, 0.9)
+    frame("PopupSibling", env.PopupParent)
+    for index = 1, 4 do
+        local popup = frame("StaticPopup" .. index, env.PopupParent, false, 0.85)
+        frame("StaticPopup" .. index .. "Button1", popup)
+    end
     for _, name in ipairs({ "LootFrame", "ContainerFrame1", "TradeSkillFrame",
         "CraftFrame", "QuestFrame", "GossipFrame", "SpellBookFrame", "WorldMapFrame",
         "QuestLogFrame", "CharacterFrame" }) do frame(name, env.UIParent, false) end
@@ -349,6 +355,51 @@ test("minimap hover composes with bags and combat", function()
     assert(e.ActionButton1.alpha == 0.8)
     s.combat = false; s.event("PLAYER_REGEN_ENABLED"); s.tick(); s.hidden()
     assert(e.GameTooltip.alpha == 1)
+end)
+
+for index = 1, 4 do
+    for _, visible in ipairs({ false, true }) do
+        test("combat party invite slot " .. index .. " visible=" .. tostring(visible), function()
+            local s, e = setup(visible)
+            s.combat = true; s.event("PLAYER_REGEN_DISABLED")
+            local popup = e["StaticPopup" .. index]
+            popup.which = "PARTY_INVITE"
+            popup:Show()
+            local function checkInvite()
+                s.hidden()
+                assert(popup.alpha == 0.85 and e.PopupParent.alpha == 0.9,
+                    "party invite or its ancestor is faded")
+                assert(e["StaticPopup" .. index .. "Button1"].alpha == 1,
+                    "accept button is faded")
+                assert(e.PopupSibling.alpha == 0, "unrelated popup sibling revealed")
+                assert(e.ActionButton1.alpha == 0.8, "combat controls faded")
+            end
+            checkInvite() -- Must work immediately, before the next update tick.
+            s.key("OnKeyDown", "ACTIONBUTTON1"); s.tick(4); checkInvite()
+            s.loot(); checkInvite()
+            s.close(); checkInvite()
+            popup:Hide(); s.hidden()
+            popup.which = "UNRELATED_DIALOG"; popup:Show(); s.tick()
+            assert(popup.alpha == 0 or e.PopupParent.alpha == 0,
+                "reused popup slot bypasses combat filtering")
+            popup:Hide()
+            s.combat = false; s.event("PLAYER_REGEN_ENABLED"); s.tick(); s.hidden()
+            e.SlashCmdList.SMARTHIDEUI("off"); s.visible()
+            assert(popup.alpha == 0.85 and e.PopupParent.alpha == 0.9)
+        end)
+    end
+end
+
+test("existing invite survives combat entry and manual overrides", function()
+    local s, e = setup(true)
+    e.StaticPopup1.which = "PARTY_INVITE"; e.StaticPopup1:Show(); s.visible()
+    s.combat = true; s.event("PLAYER_REGEN_DISABLED")
+    assert(e.StaticPopup1.alpha == 0.85 and e.PopupParent.alpha == 0.9)
+    for _, command in ipairs({ "show", "off" }) do
+        e.SlashCmdList.SMARTHIDEUI(command)
+        e.StaticPopup1:Hide(); e.StaticPopup1:Show(); s.tick(4); s.visible()
+        assert(e.StaticPopup1.alpha == 0.85 and e.PopupSibling.alpha == 1)
+    end
 end)
 
 for _, failure in ipairs(failures) do print("FAIL " .. failure) end
