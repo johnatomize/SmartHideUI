@@ -20,7 +20,7 @@ local function setup(visible)
     function methods:IsShown() return self.shown end
     function methods:IsObjectType(kind) return self.kind == kind end
     function methods:IsForbidden() return false end
-    function methods:HasFocus() return false end
+    function methods:HasFocus() return self.focused or false end
     function methods:EnableKeyboard() end
     function methods:SetPropagateKeyboardInput() end
     function methods:RegisterEvent(event) self.events[event] = true end
@@ -52,7 +52,15 @@ local function setup(visible)
     frame("Minimap", env.MinimapCluster)
     frame("MinimapMenu", env.MinimapCluster, true, 0.75)
     frame("TrackingPin", env.Minimap)
+    frame("ChatFrame1", env.UIParent, true, 0.85)
+    frame("ChatFrame1EditBox", env.UIParent, false, 0.9)
+    frame("ChatFrame1Tab", env.UIParent)
+    frame("ChatFrame1ButtonFrame", env.UIParent)
+    frame("GeneralDockManager", env.UIParent)
     frame("Hud", env.UIParent, true, 0.65)
+    frame("TrackerParent", env.UIParent, true, 0.9)
+    frame("TrackerSibling", env.TrackerParent)
+    frame("QuestWatchFrame", env.TrackerParent, false, 0.8)
     frame("BuffFrame", env.UIParent, true, 0.8)
     frame("DebuffFrame", env.UIParent, true, 0.9)
     frame("MainMenuBar", env.UIParent)
@@ -73,11 +81,12 @@ local function setup(visible)
     end
     for _, name in ipairs({ "LootFrame", "ContainerFrame1", "TradeSkillFrame",
         "CraftFrame", "QuestFrame", "GossipFrame", "SpellBookFrame", "WorldMapFrame",
-        "QuestLogFrame", "CharacterFrame" }) do frame(name, env.UIParent, false) end
+        "QuestLogFrame", "CharacterFrame", "MerchantFrame" }) do frame(name, env.UIParent, false) end
+    frame("StackSplitFrame", env.UIParent, false, 0.85)
     frame("GameTooltip", env.UIParent, false, 1, "GameTooltip")
     env.UIPanelWindows = { TradeSkillFrame = {}, CraftFrame = {}, QuestFrame = {},
         GossipFrame = {}, SpellBookFrame = {}, WorldMapFrame = {}, QuestLogFrame = {},
-        CharacterFrame = {} }
+        CharacterFrame = {}, MerchantFrame = {} }
     env.SlashCmdList = {}
     env.CreateFrame = function(_, name) return frame(name, env.UIParent) end
     env.GetTime = function() return s.time end
@@ -92,7 +101,7 @@ local function setup(visible)
     env.UnitCastingInfo = function() return s.cast end
     env.UnitChannelInfo = function() return s.channel end
     env.UnitExists = function(unit) return unit == "target" and s.target or false end
-    env.UnitIsPlayer = function() return false end
+    env.UnitIsPlayer = function(unit) return unit == "target" and s.playerTarget or false end
     env.UnitIsDeadOrGhost = function() return s.deadTarget end
     env.UnitCanAttack = function() return not s.friendly end
     env.IsShiftKeyDown = function() return false end
@@ -353,6 +362,41 @@ test("enemy selection, continued activity, and target loss", function()
     assert(e.MainMenuBar.alpha == 0 or e.ActionButton1.alpha == 0)
 end)
 
+test("friendly player portrait persists through activity and overlapping modes", function()
+    local s, e = setup()
+    s.target, s.friendly, s.playerTarget = true, true, true
+    s.event("PLAYER_TARGET_CHANGED"); s.hidden()
+    assert(e.TargetFrame.alpha == 0.9 and e.PlayerFrame.alpha == 0)
+    assert(e.MainMenuBar.alpha == 0 or e.ActionButton1.alpha == 0)
+    s.key("OnKeyDown", "UNRELATED_BINDING"); s.tick(4); s.hidden()
+    assert(e.TargetFrame.alpha == 0.9)
+    e.ContainerFrame1:Show(); s.tick(); s.hidden()
+    assert(e.TargetFrame.alpha == 0.9 and e.ActionButton1.alpha == 0.8)
+    e.ContainerFrame1:Hide(); s.tick(); s.hidden()
+    e.GossipFrame:Show(); s.tick(); s.hidden()
+    assert(e.TargetFrame.alpha == 0.9 and e.GossipFrame.alpha == 1)
+    e.GossipFrame:Hide(); s.tick(); s.hidden()
+    s.combat = true; s.event("PLAYER_REGEN_DISABLED"); s.hidden()
+    assert(e.TargetFrame.alpha == 0.9)
+    s.combat = false; s.event("PLAYER_REGEN_ENABLED"); s.hidden()
+    assert(e.TargetFrame.alpha == 0.9)
+    s.target = false; s.event("PLAYER_TARGET_CHANGED"); s.hidden()
+    assert(e.TargetFrame.alpha == 0)
+end)
+
+test("friendly player targeting respects visible UI and overrides", function()
+    local s, e = setup(true)
+    s.target, s.friendly, s.playerTarget = true, true, true
+    s.event("PLAYER_TARGET_CHANGED"); s.visible()
+    s.tick(4); s.hidden()
+    assert(e.TargetFrame.alpha == 0.9)
+    for _, command in ipairs({ "show", "off" }) do
+        e.SlashCmdList.SMARTHIDEUI(command)
+        s.event("PLAYER_TARGET_CHANGED"); s.tick(4); s.visible()
+        assert(e.TargetFrame.alpha == 0.9)
+    end
+end)
+
 test("mouse selection composes with bags and combat", function()
     local s, e = setup()
     s.target = true; s.event("PLAYER_TARGET_CHANGED"); s.hidden()
@@ -492,6 +536,157 @@ for _, visible in ipairs({ false, true }) do
         e.SlashCmdList.SMARTHIDEUI("off"); s.visible()
         assert(e.MinimapParent.alpha == 0.9 and e.MinimapSibling.alpha == 1)
         assert(e.MinimapMenu.alpha == 0.75 and e.MinimapCluster.alpha == 0.85)
+    end)
+end
+
+
+for _, binding in ipairs({ "OPENCHAT", "OPENCHATSLASH", "CHATREPLY", "CHATREPLY2" }) do
+    test(binding .. " reveals only chat and closes without revealing HUD", function()
+        local s, e = setup()
+        s.key("OnKeyDown", binding); s.hidden()
+        e.ChatFrame1EditBox:Show()
+        e.ChatFrame1EditBox.focused = true
+        e.ChatFrame1EditBox:Fire("OnEditFocusGained"); s.hidden()
+        assert(e.ChatFrame1.alpha == 0.85 and e.ChatFrame1EditBox.alpha == 0.9)
+        assert(e.MainMenuBar.alpha == 0 or e.ActionButton1.alpha == 0)
+        s.key("OnKeyUp", binding); s.tick(20); s.hidden()
+        assert(e.ChatFrame1.alpha == 0.85)
+        s.key("OnKeyDown", "UNRELATED_BINDING"); s.hidden()
+        s.key("OnKeyUp", "UNRELATED_BINDING")
+        s.key("OnKeyDown", "OPENCHAT")
+        e.ChatFrame1EditBox.focused = false
+        e.ChatFrame1EditBox:Fire("OnEditFocusLost")
+        e.ChatFrame1EditBox:Hide()
+        s.key("OnKeyUp", "OPENCHAT"); s.hidden()
+        s.tick(4); s.hidden()
+        assert(e.ChatFrame1.alpha == 0)
+    end)
+end
+
+for _, event in ipairs({ "CHAT_MSG_WHISPER", "CHAT_MSG_BN_WHISPER", "CHAT_MSG_SAY" }) do
+    test(event .. " reveals chat temporarily and extends on new messages", function()
+        local s, e = setup()
+        s.event(event); s.hidden()
+        assert(e.ChatFrame1.alpha == 0.85)
+        assert(e.MainMenuBar.alpha == 0 or e.ActionButton1.alpha == 0)
+        s.tick(9); s.hidden(); assert(e.ChatFrame1.alpha == 0.85)
+        s.event(event); s.tick(9); s.hidden(); assert(e.ChatFrame1.alpha == 0.85)
+        s.tick(2); s.hidden(); assert(e.ChatFrame1.alpha == 0)
+    end)
+end
+
+test("chat composes with bags, quest conversation, target, loot and combat", function()
+    local s, e = setup()
+    s.event("CHAT_MSG_WHISPER")
+    e.ContainerFrame1:Show(); s.tick(); s.hidden()
+    assert(e.ChatFrame1.alpha == 0.85 and e.ContainerFrame1.alpha == 1)
+    e.ContainerFrame1:Hide(); s.tick(); s.hidden()
+    e.GossipFrame:Show(); s.tick(); s.hidden()
+    assert(e.ChatFrame1.alpha == 0.85 and e.GossipFrame.alpha == 1)
+    e.GossipFrame:Hide(); s.tick(); s.hidden()
+    s.target, s.friendly, s.playerTarget = true, true, true
+    s.event("PLAYER_TARGET_CHANGED"); s.hidden()
+    assert(e.ChatFrame1.alpha == 0.85 and e.TargetFrame.alpha == 0.9)
+    s.loot(); s.hidden()
+    assert(e.ChatFrame1.alpha == 0.85 and e.LootFrame.alpha == 1)
+    s.close(true); s.hidden()
+    s.combat = true; s.event("PLAYER_REGEN_DISABLED"); s.hidden()
+    assert(e.ChatFrame1.alpha == 0.85 and e.ActionButton1.alpha == 0.8)
+    s.tick(11); s.hidden()
+    assert(e.ChatFrame1.alpha == 0 and e.ActionButton1.alpha == 0.8)
+    s.combat = false; s.event("PLAYER_REGEN_ENABLED"); s.hidden()
+    assert(e.TargetFrame.alpha == 0.9)
+end)
+
+test("chat respects visible entry and explicit overrides", function()
+    local s, e = setup(true)
+    s.key("OnKeyDown", "OPENCHAT")
+    e.ChatFrame1EditBox.focused = true
+    e.ChatFrame1EditBox:Fire("OnEditFocusGained")
+    s.tick(4); s.visible()
+    e.ChatFrame1EditBox.focused = false
+    s.tick(4); s.hidden()
+    for _, command in ipairs({ "show", "off" }) do
+        e.SlashCmdList.SMARTHIDEUI(command)
+        s.event("CHAT_MSG_SAY"); s.tick(11); s.visible()
+        assert(e.ChatFrame1.alpha == 0.85)
+    end
+end)
+
+test("objective progress reveals only tracker, refreshes duration and expires", function()
+    local s, e = setup()
+    s.event("QUEST_WATCH_UPDATE")
+    assert(e.QuestWatchFrame.alpha == 0.8 and not e.QuestWatchFrame.shown)
+    e.QuestWatchFrame:Show() -- Blizzard can show it after the progress event.
+    assert(e.TrackerParent.alpha == 0.9 and e.TrackerSibling.alpha == 0)
+    s.hidden()
+    s.tick(2)
+    s.event("QUEST_WATCH_UPDATE") -- Includes the final objective update.
+    s.key("OnKeyDown", "UNBOUND"); s.hidden()
+    s.tick(2)
+    assert(e.QuestWatchFrame.alpha == 0.8)
+    s.tick(1.1); s.hidden()
+    assert(e.QuestWatchFrame.alpha == 0 or e.TrackerParent.alpha == 0)
+    e.SlashCmdList.SMARTHIDEUI("show")
+    assert(e.QuestWatchFrame.alpha == 0.8 and e.TrackerParent.alpha == 0.9)
+end)
+
+for _, mode in ipairs({ "combat", "loot", "bags", "quest" }) do
+    test("objective tracker composes with " .. mode, function()
+        local s, e = setup()
+        if mode == "combat" then s.combat = true; s.event("PLAYER_REGEN_DISABLED")
+        elseif mode == "loot" then s.loot()
+        elseif mode == "bags" then e.ContainerFrame1:Show(); s.tick()
+        else e.QuestFrame:Show(); s.event("QUEST_DETAIL") end
+        s.event("QUEST_WATCH_UPDATE"); s.tick(); s.hidden()
+        assert(e.QuestWatchFrame.alpha == 0.8 and e.TrackerParent.alpha == 0.9)
+        s.tick(3.1); s.hidden()
+        assert(e.QuestWatchFrame.alpha == 0 or e.TrackerParent.alpha == 0)
+        if mode == "combat" then assert(e.ActionButton1.alpha == 0.8)
+        elseif mode == "loot" then assert(e.LootFrame.alpha == 1)
+        elseif mode == "bags" then assert(e.ContainerFrame1.alpha == 1)
+        else assert(e.QuestFrame.alpha == 1) end
+    end)
+end
+
+test("closing loot preserves the remaining tracker reveal", function()
+    local s, e = setup()
+    s.loot(); s.event("QUEST_WATCH_UPDATE"); s.close()
+    s.hidden(); assert(e.QuestWatchFrame.alpha == 0.8)
+    s.tick(3.1); s.hidden()
+    assert(e.QuestWatchFrame.alpha == 0 or e.TrackerParent.alpha == 0)
+end)
+
+test("quest progress preserves visible entry and manual overrides", function()
+    local s, e = setup(true)
+    s.event("QUEST_WATCH_UPDATE"); s.tick(); s.visible()
+    s.tick(4); s.hidden()
+    for _, command in ipairs({ "show", "off" }) do
+        e.SlashCmdList.SMARTHIDEUI("on"); s.tick(4)
+        s.event("QUEST_WATCH_UPDATE")
+        e.SlashCmdList.SMARTHIDEUI(command)
+        s.event("QUEST_WATCH_UPDATE"); s.tick(4); s.visible()
+        assert(e.QuestWatchFrame.alpha == 0.8 and e.TrackerParent.alpha == 0.9)
+    end
+end)
+
+for _, visible in ipairs({ false, true }) do
+    test("vendor quantity picker with visible entry " .. tostring(visible), function()
+        local s, e = setup(visible)
+        e.MerchantFrame:Show(); e.ContainerFrame1:Show(); s.tick()
+        e.StackSplitFrame:Show()
+        assert(e.StackSplitFrame.alpha == 0.85, "quantity picker was faded")
+        assert(e.MerchantFrame.alpha == 1)
+        s.key("OnKeyDown", "UNBOUND"); s.tick(); s.hidden()
+        assert(e.StackSplitFrame.alpha == 0.85)
+        s.combat = true; s.event("PLAYER_REGEN_DISABLED"); s.tick()
+        assert(e.StackSplitFrame.alpha == 0.85); s.hidden()
+        e.StackSplitFrame:Hide(); s.tick(); s.hidden()
+        s.combat = false; e.MerchantFrame:Hide(); e.ContainerFrame1:Hide()
+        s.tick(); s.tick(4); s.hidden()
+        assert(e.StackSplitFrame.alpha == 0)
+        e.SlashCmdList.SMARTHIDEUI("off")
+        assert(e.StackSplitFrame.alpha == 0.85); s.visible()
     end)
 end
 

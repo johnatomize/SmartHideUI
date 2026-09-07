@@ -5,8 +5,12 @@ local hidden = false
 local originalAlpha = {}
 local unsupportedAlpha = setmetatable({}, { __mode = "k" })
 local ApplyCombatUI, ApplyBagUI, ApplyQuestUI, ApplySpellbookUI, ApplyMapUI
-local ApplyQuestLogUI, ApplyLootUI, ApplyTradeSkillUI, ApplyTargetUI
+local ApplyQuestLogUI, ApplyLootUI, ApplyTradeSkillUI, ApplyTargetUI, ApplyChatUI
 local lootOpen = false
+local questTrackerVisibleUntil = 0
+local function NeedsQuestTrackerUI()
+    return GetTime() < questTrackerVisibleUntil
+end
 local tradeSkillFrames = { "TradeSkillFrame", "CraftFrame" }
 local function IsTradeSkillOpen()
     for _, name in ipairs(tradeSkillFrames) do
@@ -90,6 +94,11 @@ local function HasEnemyTarget()
         and not UnitIsDeadOrGhost("target")
 end
 
+local function HasPortraitTarget()
+    return HasEnemyTarget() or (UnitExists("target") and UnitIsPlayer("target")
+        and not UnitIsDeadOrGhost("target"))
+end
+
 local auraFrames = { "BuffFrame", "DebuffFrame", "TemporaryEnchantFrame" }
 for index = 1, 32 do
     auraFrames[#auraFrames + 1] = "BuffButton" .. index
@@ -135,6 +144,19 @@ local function RestoreUI()
     ApplyBagButtons()
 end
 
+local function IsChatting()
+    for index = 1, NUM_CHAT_WINDOWS or 10 do
+        local editBox = _G["ChatFrame" .. index .. "EditBox"]
+        if editBox and editBox:HasFocus() then return true end
+    end
+    return false
+end
+
+local chatVisibleUntil = 0
+local function NeedsChatUI()
+    return IsChatting() or GetTime() < chatVisibleUntil
+end
+
 local function Activity()
     lastActivity = GetTime()
     if enabled and InCombat() then
@@ -170,18 +192,23 @@ local function Activity()
         ApplyBagUI()
         return
     end
-    if enabled and hidden and HasEnemyTarget() then
+    if enabled and hidden and HasPortraitTarget() then
         ApplyTargetUI()
+        return
+    end
+    if enabled and hidden and NeedsChatUI() then
+        ApplyChatUI()
         return
     end
     -- Opening objects uses a cast. Keep the current hidden policy while its
     -- progress runs, including activity detected by the update loop.
-    if enabled and hidden and (UnitCastingInfo("player") or UnitChannelInfo("player")) then
+    if enabled and hidden and (NeedsQuestTrackerUI()
+        or UnitCastingInfo("player") or UnitChannelInfo("player")) then
         HideUI()
         return
     end
     if enabled and (hidden == "combat" or hidden == "map" or hidden == "questlog"
-        or hidden == "loot" or hidden == "tradeskill" or hidden == "target") then
+        or hidden == "loot" or hidden == "tradeskill" or hidden == "target" or hidden == "chat") then
         HideUI()
         return
     end
@@ -205,14 +232,6 @@ local function FadeAlpha(region)
         originalAlpha[region] = nil
         unsupportedAlpha[region] = true
     end
-end
-
-local function IsChatting()
-    for index = 1, NUM_CHAT_WINDOWS or 10 do
-        local editBox = _G["ChatFrame" .. index .. "EditBox"]
-        if editBox and editBox:HasFocus() then return true end
-    end
-    return false
 end
 
 -- Preserve the whole minimap cluster, including its surrounding controls, in
@@ -263,6 +282,23 @@ local function ApplyCastingUI(keep, ancestors)
     end
 end
 
+-- Objective progress is a temporary overlay shared by every hidden policy.
+-- Blizzard owns tracker contents and Show/Hide; only restore its saved alpha.
+local function ApplyQuestTrackerUI(keep, ancestors)
+    if not NeedsQuestTrackerUI() then return end
+    for _, name in ipairs({ "QuestWatchFrame", "WatchFrame", "ObjectiveTrackerFrame" }) do
+        local frame = _G[name]
+        if frame then
+            keep[frame] = true
+            local parent = frame:GetParent()
+            while parent and parent ~= UIParent do
+                ancestors[parent] = true
+                parent = parent:GetParent()
+            end
+        end
+    end
+end
+
 local function FadeRegion(region, playerAncestors, keepPlayer, keepAuras)
     if region == controller or region == GameTooltip then return end
     -- Blizzard animates these frames' alpha; hiding them every tick causes flicker.
@@ -294,8 +330,12 @@ HideUI = function()
         ApplyQuestUI()
         return
     end
-    if HasEnemyTarget() then
+    if HasPortraitTarget() then
         ApplyTargetUI()
+        return
+    end
+    if NeedsChatUI() then
+        ApplyChatUI()
         return
     end
     if hidden == "combat" then RestoreUI() end
@@ -307,6 +347,7 @@ HideUI = function()
     ApplyMinimapUI(keepAuras, playerAncestors)
     ApplyMirrorTimerUI(keepAuras, playerAncestors)
     ApplyCastingUI(keepAuras, playerAncestors)
+    ApplyQuestTrackerUI(keepAuras, playerAncestors)
     for _, name in ipairs(auraFrames) do
         local frame = _G[name]
         if frame then
@@ -416,34 +457,47 @@ local function ApplyPartyInviteUI(visibleFrames)
     end
 end
 
+local function ApplyStackSplitUI(visibleFrames)
+    -- The quantity picker is a separate UIParent child, not part of the
+    -- merchant or bag windows. Preserve it before Blizzard shows it, too.
+    if AreBagsOpen() or (MerchantFrame and MerchantFrame:IsShown()) then
+        visibleFrames[#visibleFrames + 1] = "StackSplitFrame"
+    end
+end
+
 local function ApplySelectiveUI(mode)
     if hidden ~= mode then RestoreUI() end
     local keep, ancestors = { [controller] = true }, {}
     ApplyMinimapUI(keep, ancestors)
     ApplyMirrorTimerUI(keep, ancestors)
     ApplyCastingUI(keep, ancestors)
+    ApplyQuestTrackerUI(keep, ancestors)
     if mode == "quest" or mode == "tradeskill" or IsTradeSkillOpen() or IsQuestConversationOpen() then
         ApplyQuestTooltips(keep, ancestors)
     end
     -- Equipment comparisons use separate tooltips from the hovered item.
     local visibleFrames = { "GameTooltip", "ShoppingTooltip1", "ShoppingTooltip2" }
+    ApplyStackSplitUI(visibleFrames)
     -- Debuffs keep all auras visible in every interaction, including loot.
     if NeedsAuras() then
         for _, name in ipairs(auraFrames) do visibleFrames[#visibleFrames + 1] = name end
     end
     if mode == "combat" then ApplyPartyInviteUI(visibleFrames) end
     local windowMode = mode == "map" or mode == "questlog" or mode == "tradeskill"
-    local modeFrames = windowMode and {}
+    local modeFrames = (windowMode or mode == "target" or mode == "chat") and {}
         or mode == "loot" and { "LootFrame" }
         or mode == "quest" and questFrames
         or (mode == "combat" and combatFrames or actionFrames)
     for _, name in ipairs(modeFrames) do
         visibleFrames[#visibleFrames + 1] = name
     end
+    -- Player targets need their portrait; enemies also need combat controls.
+    if mode ~= "combat" and HasPortraitTarget() then
+        visibleFrames[#visibleFrames + 1] = "TargetFrame"
+    end
     -- Target controls compose with open interactions; combat owns its own HUD.
     if mode ~= "combat" and HasEnemyTarget() then
         visibleFrames[#visibleFrames + 1] = "PlayerFrame"
-        visibleFrames[#visibleFrames + 1] = "TargetFrame"
         for _, name in ipairs(actionFrames) do visibleFrames[#visibleFrames + 1] = name end
     end
     -- Window interactions preserve open panels without revealing the HUD.
@@ -485,7 +539,10 @@ local function ApplySelectiveUI(mode)
     if mode ~= "loot" and mode ~= "quest" and IsQuestConversationOpen() then
         for _, name in ipairs(questFrames) do visibleFrames[#visibleFrames + 1] = name end
     end
-    if mode == "combat" and IsChatting() then
+    if mode == "chat" and NeedsPlayerFrame() then
+        visibleFrames[#visibleFrames + 1] = "PlayerFrame"
+    end
+    if NeedsChatUI() then
         for index = 1, NUM_CHAT_WINDOWS or 10 do
             for _, suffix in ipairs({ "", "Tab", "EditBox", "ButtonFrame" }) do
                 visibleFrames[#visibleFrames + 1] = "ChatFrame" .. index .. suffix
@@ -544,6 +601,28 @@ ApplyQuestLogUI = function() ApplySelectiveUI("questlog") end
 ApplyLootUI = function() ApplySelectiveUI("loot") end
 ApplyTradeSkillUI = function() ApplySelectiveUI("tradeskill") end
 ApplyTargetUI = function() ApplySelectiveUI("target") end
+ApplyChatUI = function() ApplySelectiveUI("chat") end
+
+local hookedChatEdits = setmetatable({}, { __mode = "k" })
+local function HookChatEdits()
+    for index = 1, NUM_CHAT_WINDOWS or 10 do
+        local editBox = _G["ChatFrame" .. index .. "EditBox"]
+        if editBox and not hookedChatEdits[editBox] then
+            editBox:HookScript("OnEditFocusGained", function()
+                if enabled and hidden then Activity() end
+            end)
+            local function ChatClosed()
+                if not enabled or not hidden then return end
+                chatVisibleUntil = math.max(chatVisibleUntil, GetTime() + delay)
+                Activity()
+            end
+            editBox:HookScript("OnEditFocusLost", ChatClosed)
+            editBox:HookScript("OnHide", ChatClosed)
+            hookedChatEdits[editBox] = true
+        end
+    end
+end
+HookChatEdits()
 
 -- The invite event can precede Blizzard showing or assigning a popup slot.
 -- Refresh on the actual frame transition so a previously faded slot is usable
@@ -711,6 +790,13 @@ local function KeyboardActivity(_, key)
     if IsControlKeyDown() then binding = "CTRL-" .. binding end
     if IsAltKeyDown() then binding = "ALT-" .. binding end
     local action = GetBindingAction(binding)
+    -- Chat bindings run after this callback; focus hooks select the policy.
+    -- Suppress both edges, including Enter/Escape after the edit box closes.
+    if hidden and (IsChatting() or action == "OPENCHAT" or action == "OPENCHATSLASH"
+        or action == "CHATREPLY" or action == "CHATREPLY2") then
+        targetClearingKeysDown[key] = true
+        return
+    end
     -- Action bindings execute after OnKeyDown. Let the resulting cast/channel
     -- or combat event choose visibility, and suppress release after completion.
     if hidden and (action:match("^ACTIONBUTTON%d+$")
@@ -772,9 +858,11 @@ for _, event in ipairs({
     -- Movement and world mouse buttons (including mouse steering) do not reveal UI.
     "BAG_UPDATE_DELAYED", "LOOT_OPENED", "LOOT_CLOSED", "QUEST_DETAIL",
     "QUEST_COMPLETE", "QUEST_GREETING", "QUEST_PROGRESS", "GOSSIP_SHOW",
+    "QUEST_WATCH_UPDATE",
     "MERCHANT_SHOW", "PLAYER_EQUIPMENT_CHANGED",
     "TRADE_SKILL_SHOW", "TRADE_SKILL_CLOSE", "CRAFT_SHOW", "CRAFT_CLOSE",
     "PLAYER_DEAD", "PLAYER_ALIVE", "PLAYER_UNGHOST",
+    "CHAT_MSG_WHISPER", "CHAT_MSG_BN_WHISPER", "CHAT_MSG_SAY",
 }) do
     controller:RegisterEvent(event)
 end
@@ -791,6 +879,26 @@ controller:SetScript("OnEvent", function(_, event)
     HookLoot()
     HookTradeSkills()
     HookPartyPopups()
+    HookChatEdits()
+    -- Unlike QUEST_LOG_UPDATE, this event reports objective progress rather
+    -- than general log refreshes. Do not count it as full-UI activity.
+    if event == "QUEST_WATCH_UPDATE" then
+        if enabled then
+            questTrackerVisibleUntil = GetTime() + 3
+            if hidden == "idle" then HideUI()
+            elseif hidden then ApplySelectiveUI(hidden) end
+        end
+        return
+    end
+    if event == "PLAYER_LEAVING_WORLD" then questTrackerVisibleUntil = 0 end
+    if event == "CHAT_MSG_WHISPER" or event == "CHAT_MSG_BN_WHISPER"
+        or event == "CHAT_MSG_SAY" then
+        if enabled then
+            chatVisibleUntil = GetTime() + 10
+            if hidden then Activity() end
+        end
+        return
+    end
     if event == "ADDON_LOADED" then return end
     -- Gathering loot changes inventory even with every bag closed. The delayed
     -- notification can arrive after LOOT_CLOSED; it is not player activity.
@@ -821,7 +929,7 @@ controller:SetScript("OnEvent", function(_, event)
     if event == "LOOT_CLOSED" or event == "PLAYER_LEAVING_WORLD" then lootOpen = false end
     -- Manual deselection and automatic target loss on death are not activity.
     if event == "PLAYER_TARGET_CHANGED" then
-        if enabled and hidden and (HasEnemyTarget() or hidden == "target") then Activity() end
+        if enabled and hidden and (HasPortraitTarget() or hidden == "target") then Activity() end
         return
     end
     -- Quest events can arrive before Blizzard shows the conversation frame.
@@ -855,6 +963,10 @@ controller:SetScript("OnUpdate", function(_, elapsed)
     elapsedSinceCheck = elapsedSinceCheck + elapsed
     if elapsedSinceCheck < 0.05 then return end
     elapsedSinceCheck = 0
+    if questTrackerVisibleUntil > 0 and not NeedsQuestTrackerUI() then
+        questTrackerVisibleUntil = 0
+        if hidden == "idle" then HideUI() end
+    end
     if InCombat() then
         ApplyCombatUI()
         ApplyBagButtons()
@@ -893,13 +1005,17 @@ controller:SetScript("OnUpdate", function(_, elapsed)
         ApplyBagUI()
         ApplyBagButtons()
         return
-    elseif hidden and HasEnemyTarget() then
+    elseif hidden and HasPortraitTarget() then
         ApplyTargetUI()
+        ApplyBagButtons()
+        return
+    elseif hidden and NeedsChatUI() then
+        ApplyChatUI()
         ApplyBagButtons()
         return
     elseif hidden == "bags" or hidden == "spellbook" or hidden == "map"
         or hidden == "questlog" or hidden == "loot" or hidden == "tradeskill"
-        or hidden == "target" then
+        or hidden == "target" or hidden == "chat" then
         RestoreUI()
         HideUI()
         ApplyBagButtons()
@@ -927,6 +1043,7 @@ SlashCmdList.SMARTHIDEUI = function(message)
         print("SmartHideUI: automatisk döljning på.")
     elseif command == "off" or command == "show" then
         enabled = false
+        questTrackerVisibleUntil = 0
         RestoreUI()
         print("SmartHideUI: UI visas och automatisk döljning är av.")
     elseif command == "delay" and tonumber(value) and tonumber(value) >= 0.5 then
