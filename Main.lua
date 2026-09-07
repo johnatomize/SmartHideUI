@@ -427,26 +427,6 @@ for index = 1, 3 do
     combatFrames[#combatFrames + 1] = "TempEnchant" .. index
 end
 
--- NPC reward tooltips may include additional comparison/addon tooltips. Keep
--- every tooltip branch, including its ancestors, without touching its alpha
--- again once restored. Blizzard owns tooltip visibility and fade animations.
-local function ApplyQuestTooltips(keep, ancestors)
-    local function Visit(frame)
-        if frame.IsForbidden and frame:IsForbidden() then return end
-        if frame:IsObjectType("GameTooltip") then
-            keep[frame] = true
-            local parent = frame:GetParent()
-            while parent and parent ~= UIParent do
-                ancestors[parent] = true
-                parent = parent:GetParent()
-            end
-            return
-        end
-        for _, child in ipairs({ frame:GetChildren() }) do Visit(child) end
-    end
-    Visit(UIParent)
-end
-
 local function ApplyPartyInviteUI(visibleFrames)
     for index = 1, STATICPOPUP_NUMDIALOGS or 4 do
         local name = "StaticPopup" .. index
@@ -472,10 +452,8 @@ local function ApplySelectiveUI(mode)
     ApplyMirrorTimerUI(keep, ancestors)
     ApplyCastingUI(keep, ancestors)
     ApplyQuestTrackerUI(keep, ancestors)
-    if mode == "quest" or mode == "tradeskill" or IsTradeSkillOpen() or IsQuestConversationOpen() then
-        ApplyQuestTooltips(keep, ancestors)
-    end
-    -- Equipment comparisons use separate tooltips from the hovered item.
+    -- All interactions use standard item and comparison tooltips without
+    -- rediscovering tooltip frames across the entire UI on every refresh.
     local visibleFrames = { "GameTooltip", "ShoppingTooltip1", "ShoppingTooltip2" }
     ApplyStackSplitUI(visibleFrames)
     -- Debuffs keep all auras visible in every interaction, including loot.
