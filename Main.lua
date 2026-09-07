@@ -624,16 +624,19 @@ local function IsInteracting()
     local foci = GetMouseFoci and GetMouseFoci()
         or (GetMouseFocus and { GetMouseFocus() }) or {}
     for _, focus in ipairs(foci) do
-        local current, hiddenBagButton = focus, false
+        local current, passiveHover = focus, false
         while current do
-            if bagButtonAlpha[current] ~= nil then
-                hiddenBagButton = true
+            -- The always-visible minimap and its pins only need their tooltip.
+            -- Check descendants too, without excluding unrelated UIParent children.
+            if current == Minimap or current == MinimapCluster
+                or bagButtonAlpha[current] ~= nil then
+                passiveHover = true
                 break
             end
             current = current:GetParent()
         end
         if focus ~= WorldFrame and focus ~= UIParent and focus ~= controller
-            and focus ~= GameTooltip and not hiddenBagButton then
+            and focus ~= GameTooltip and not passiveHover then
             return true
         end
     end

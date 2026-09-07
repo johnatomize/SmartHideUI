@@ -46,6 +46,9 @@ local function setup(visible)
     end
     frame("UIParent")
     frame("WorldFrame")
+    frame("MinimapCluster", env.UIParent)
+    frame("Minimap", env.MinimapCluster)
+    frame("TrackingPin", env.Minimap)
     frame("Hud", env.UIParent, true, 0.65)
     frame("MainMenuBar", env.UIParent)
     frame("ActionButton1", env.MainMenuBar, true, 0.8)
@@ -299,6 +302,53 @@ test("visible targeting and explicit overrides stay visible", function()
         e.SlashCmdList.SMARTHIDEUI(command); s.visible()
         s.event("PLAYER_TARGET_CHANGED"); s.tick(4); s.visible()
     end
+end)
+
+for _, name in ipairs({ "Minimap", "MinimapCluster", "TrackingPin" }) do
+    test(name .. " hover preserves hidden HUD and tooltip", function()
+        local s, e = setup()
+        e.GetMouseFoci = function() return { e[name] } end
+        e.GameTooltip:Show()
+        s.tick(); s.hidden()
+        s.tick(4); s.hidden()
+        assert(e.Minimap.alpha == 1 and e.MinimapCluster.alpha == 1)
+        assert(e.GameTooltip:IsShown() and e.GameTooltip.alpha == 1)
+        e.GameTooltip:Hide()
+        e.GetMouseFoci = function() return { e.WorldFrame } end
+        s.tick(); s.hidden()
+    end)
+end
+
+test("legacy minimap focus and unrelated simultaneous focus", function()
+    local s, e = setup()
+    e.GetMouseFoci = false
+    e.GetMouseFocus = function() return e.TrackingPin end
+    s.tick(); s.hidden()
+    e.GetMouseFoci = function() return { e.Minimap, e.Hud } end
+    s.tick(); s.visible()
+end)
+
+test("minimap hover preserves visible state and manual overrides", function()
+    local s, e = setup(true)
+    e.GetMouseFoci = function() return { e.Minimap } end
+    s.tick(); s.visible()
+    s.tick(4); s.hidden()
+    for _, command in ipairs({ "show", "off" }) do
+        e.SlashCmdList.SMARTHIDEUI(command)
+        s.tick(4); s.visible()
+    end
+end)
+
+test("minimap hover composes with bags and combat", function()
+    local s, e = setup()
+    e.GetMouseFoci = function() return { e.TrackingPin } end
+    e.ContainerFrame1:Show(); s.tick(); s.hidden()
+    assert(e.ContainerFrame1.alpha == 1 and e.ActionButton1.alpha == 0.8)
+    e.ContainerFrame1:Hide(); s.tick(); s.hidden()
+    s.combat = true; s.event("PLAYER_REGEN_DISABLED"); s.tick(); s.hidden()
+    assert(e.ActionButton1.alpha == 0.8)
+    s.combat = false; s.event("PLAYER_REGEN_ENABLED"); s.tick(); s.hidden()
+    assert(e.GameTooltip.alpha == 1)
 end)
 
 for _, failure in ipairs(failures) do print("FAIL " .. failure) end
