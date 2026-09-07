@@ -5,7 +5,7 @@ local hidden = false
 local originalAlpha = {}
 local unsupportedAlpha = setmetatable({}, { __mode = "k" })
 local ApplyCombatUI, ApplyBagUI, ApplyQuestUI, ApplySpellbookUI, ApplyMapUI
-local ApplyQuestLogUI, ApplyLootUI, ApplyTradeSkillUI
+local ApplyQuestLogUI, ApplyLootUI, ApplyTradeSkillUI, ApplyTargetUI
 local lootOpen = false
 local tradeSkillFrames = { "TradeSkillFrame", "CraftFrame" }
 local function IsTradeSkillOpen()
@@ -85,6 +85,11 @@ local function InCombat()
     return InCombatLockdown() or UnitAffectingCombat("player")
 end
 
+local function HasEnemyTarget()
+    return UnitExists("target") and UnitCanAttack("player", "target")
+        and not UnitIsDeadOrGhost("target")
+end
+
 local auraFrames = { "BuffFrame", "DebuffFrame", "TemporaryEnchantFrame" }
 for index = 1, 32 do
     auraFrames[#auraFrames + 1] = "BuffButton" .. index
@@ -159,6 +164,10 @@ local function Activity()
         ApplyBagUI()
         return
     end
+    if enabled and hidden and HasEnemyTarget() then
+        ApplyTargetUI()
+        return
+    end
     -- Opening objects uses a cast. Keep the current hidden policy while its
     -- progress runs, including activity detected by the update loop.
     if enabled and hidden and (UnitCastingInfo("player") or UnitChannelInfo("player")) then
@@ -166,7 +175,7 @@ local function Activity()
         return
     end
     if enabled and (hidden == "combat" or hidden == "map" or hidden == "questlog"
-        or hidden == "loot" or hidden == "tradeskill") then
+        or hidden == "loot" or hidden == "tradeskill" or hidden == "target") then
         HideUI()
         return
     end
@@ -270,6 +279,10 @@ HideUI = function()
     end
     if IsQuestConversationOpen() then
         ApplyQuestUI()
+        return
+    end
+    if HasEnemyTarget() then
+        ApplyTargetUI()
         return
     end
     if hidden == "combat" then RestoreUI() end
@@ -397,6 +410,12 @@ local function ApplySelectiveUI(mode)
     for _, name in ipairs(modeFrames) do
         visibleFrames[#visibleFrames + 1] = name
     end
+    -- Target controls compose with open interactions; combat owns its own HUD.
+    if mode ~= "combat" and HasEnemyTarget() then
+        visibleFrames[#visibleFrames + 1] = "PlayerFrame"
+        visibleFrames[#visibleFrames + 1] = "TargetFrame"
+        for _, name in ipairs(actionFrames) do visibleFrames[#visibleFrames + 1] = name end
+    end
     -- Window interactions preserve open panels without revealing the HUD.
     if mode ~= "loot" then
         for _, name in ipairs(tradeSkillFrames) do
@@ -494,6 +513,7 @@ ApplyMapUI = function() ApplySelectiveUI("map") end
 ApplyQuestLogUI = function() ApplySelectiveUI("questlog") end
 ApplyLootUI = function() ApplySelectiveUI("loot") end
 ApplyTradeSkillUI = function() ApplySelectiveUI("tradeskill") end
+ApplyTargetUI = function() ApplySelectiveUI("target") end
 
 local function TradeSkillClosed()
     if not enabled or not hidden then return end
@@ -639,6 +659,12 @@ local function KeyboardActivity(_, key)
     if IsControlKeyDown() then binding = "CTRL-" .. binding end
     if IsAltKeyDown() then binding = "ALT-" .. binding end
     local action = GetBindingAction(binding)
+    -- Target bindings run after this callback and may find no unit. Neither
+    -- key edge should reveal the HUD; PLAYER_TARGET_CHANGED selects the policy.
+    if action:match("^TARGET") or action == "ASSISTTARGET" then
+        targetClearingKeysDown[key] = true
+        return
+    end
     -- Escape can close a window, clear the target, or cancel gathering. Suppress
     -- both key edges: the window, target, or cast may be gone on key release.
     if hidden and action == "TOGGLEGAMEMENU"
@@ -734,19 +760,16 @@ controller:SetScript("OnEvent", function(_, event)
     if event == "LOOT_CLOSED" and not lootOpen then return end
     if event == "LOOT_CLOSED" or event == "PLAYER_LEAVING_WORLD" then lootOpen = false end
     -- Manual deselection and automatic target loss on death are not activity.
-    if event == "PLAYER_TARGET_CHANGED" and not UnitExists("target") then return end
+    if event == "PLAYER_TARGET_CHANGED" then
+        if enabled and hidden and (HasEnemyTarget() or hidden == "target") then Activity() end
+        return
+    end
     -- Quest events can arrive before Blizzard shows the conversation frame.
     if enabled and hidden and not InCombat() and not lootOpen then
         if event == "QUEST_DETAIL" or event == "QUEST_COMPLETE"
             or event == "QUEST_GREETING" or event == "QUEST_PROGRESS"
             or event == "GOSSIP_SHOW" then
             ApplyQuestUI()
-            return
-        end
-        -- Selecting a quest giver or corpse can precede its interaction window.
-        if event == "PLAYER_TARGET_CHANGED" and UnitExists("target")
-            and not UnitIsPlayer("target")
-            and (UnitIsDeadOrGhost("target") or not UnitCanAttack("player", "target")) then
             return
         end
     end
@@ -807,8 +830,13 @@ controller:SetScript("OnUpdate", function(_, elapsed)
         ApplyBagUI()
         ApplyBagButtons()
         return
+    elseif hidden and HasEnemyTarget() then
+        ApplyTargetUI()
+        ApplyBagButtons()
+        return
     elseif hidden == "bags" or hidden == "spellbook" or hidden == "map"
-        or hidden == "questlog" or hidden == "loot" or hidden == "tradeskill" then
+        or hidden == "questlog" or hidden == "loot" or hidden == "tradeskill"
+        or hidden == "target" then
         RestoreUI()
         HideUI()
         ApplyBagButtons()

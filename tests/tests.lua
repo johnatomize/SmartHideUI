@@ -1,4 +1,4 @@
--- Lua 5.1: run from the addon directory with "lua tests/gathering.lua".
+-- Lua 5.1: run from the addon directory with "lua tests/tests.lua".
 -- A caller may supply addon source as the chunk argument for baseline checks.
 local source = ...
 if not source then
@@ -50,6 +50,8 @@ local function setup(visible)
     frame("MainMenuBar", env.UIParent)
     frame("ActionButton1", env.MainMenuBar, true, 0.8)
     frame("CharacterMicroButton", env.MainMenuBar)
+    frame("PlayerFrame", env.UIParent, true, 0.7)
+    frame("TargetFrame", env.UIParent, true, 0.9)
     frame("MainMenuBarBackpackButton", env.MainMenuBar)
     frame("CastParent", env.UIParent, true, 0.9)
     frame("CastingBarFrame", env.CastParent, false, 0.75)
@@ -78,7 +80,7 @@ local function setup(visible)
     env.UnitExists = function(unit) return unit == "target" and s.target or false end
     env.UnitIsPlayer = function() return false end
     env.UnitIsDeadOrGhost = function() return s.deadTarget end
-    env.UnitCanAttack = function() return true end
+    env.UnitCanAttack = function() return not s.friendly end
     env.IsShiftKeyDown = function() return false end
     env.IsControlKeyDown = env.IsShiftKeyDown
     env.IsAltKeyDown = env.IsShiftKeyDown
@@ -247,6 +249,58 @@ test("ordinary keyboard activity still restores idle UI", function()
     s.key("OnKeyDown", "UNRELATED_BINDING"); s.visible()
 end)
 
+for _, binding in ipairs({ "TARGETNEARESTENEMY", "TARGETPREVIOUSENEMY", "ASSISTTARGET" }) do
+    test(binding .. " leaves empty targeting hidden", function()
+        local s = setup()
+        s.key("OnKeyDown", binding); s.hidden()
+        s.key("OnKeyUp", binding); s.tick(); s.hidden()
+    end)
+end
+
+test("enemy selection, continued activity, and target loss", function()
+    local s, e = setup()
+    s.key("OnKeyDown", "TARGETNEARESTENEMY"); s.hidden()
+    s.target = true; s.event("PLAYER_TARGET_CHANGED"); s.hidden()
+    assert(e.PlayerFrame.alpha == 0.7 and e.TargetFrame.alpha == 0.9)
+    assert(e.MainMenuBar.alpha == 1 and e.ActionButton1.alpha == 0.8)
+    s.key("OnKeyUp", "TARGETNEARESTENEMY"); s.hidden()
+    s.key("OnKeyDown", "ACTIONBUTTON1"); s.tick(4); s.hidden()
+    s.target = false; s.event("PLAYER_TARGET_CHANGED"); s.hidden()
+    assert(e.PlayerFrame.alpha == 0 and e.TargetFrame.alpha == 0)
+    assert(e.MainMenuBar.alpha == 0 or e.ActionButton1.alpha == 0)
+end)
+
+test("mouse selection composes with bags and combat", function()
+    local s, e = setup()
+    s.target = true; s.event("PLAYER_TARGET_CHANGED"); s.hidden()
+    assert(e.TargetFrame.alpha == 0.9 and e.ActionButton1.alpha == 0.8)
+    e.ContainerFrame1:Show(); s.tick(); s.hidden()
+    assert(e.ContainerFrame1.alpha == 1 and e.PlayerFrame.alpha == 0.7)
+    e.ContainerFrame1:Hide(); s.tick(); s.hidden()
+    s.combat = true; s.event("PLAYER_REGEN_DISABLED"); s.hidden()
+    s.combat = false; s.event("PLAYER_REGEN_ENABLED"); s.hidden()
+    assert(e.TargetFrame.alpha == 0.9)
+    s.friendly = true; s.event("PLAYER_TARGET_CHANGED"); s.hidden()
+    assert(e.TargetFrame.alpha == 0)
+end)
+
+test("target death returns to idle", function()
+    local s, e = setup()
+    s.target = true; s.event("PLAYER_TARGET_CHANGED")
+    s.deadTarget = true; s.tick(); s.hidden()
+    assert(e.TargetFrame.alpha == 0)
+end)
+
+test("visible targeting and explicit overrides stay visible", function()
+    local s, e = setup(true)
+    s.target = true; s.event("PLAYER_TARGET_CHANGED"); s.visible()
+    s.tick(4); s.hidden()
+    for _, command in ipairs({ "show", "off" }) do
+        e.SlashCmdList.SMARTHIDEUI(command); s.visible()
+        s.event("PLAYER_TARGET_CHANGED"); s.tick(4); s.visible()
+    end
+end)
+
 for _, failure in ipairs(failures) do print("FAIL " .. failure) end
-print(string.format("%d/%d gathering regression checks passed", count - #failures, count))
-assert(#failures == 0, "gathering regression checks failed")
+print(string.format("%d/%d regression checks passed", count - #failures, count))
+assert(#failures == 0, "regression checks failed")
