@@ -5,8 +5,29 @@ local hidden = false
 local originalAlpha = {}
 local unsupportedAlpha = setmetatable({}, { __mode = "k" })
 local ApplyCombatUI, ApplyBagUI, ApplyQuestUI, ApplySpellbookUI, ApplyMapUI
-local ApplyQuestLogUI, ApplyLootUI
+local ApplyQuestLogUI, ApplyLootUI, ApplyTradeSkillUI
 local lootOpen = false
+local tradeSkillFrames = { "TradeSkillFrame", "CraftFrame" }
+local function IsTradeSkillOpen()
+    for _, name in ipairs(tradeSkillFrames) do
+        local frame = _G[name]
+        if frame and frame:IsShown() then return true end
+    end
+    return false
+end
+local extraWindows = { "GameMenuFrame", "SettingsPanel", "InterfaceOptionsFrame",
+    "ChatConfigFrame", "StaticPopup1", "StaticPopup2", "StaticPopup3", "StaticPopup4" }
+local function HasOpenPanel()
+    for name in pairs(UIPanelWindows or {}) do
+        local frame = _G[name]
+        if frame and frame:IsShown() then return true end
+    end
+    for _, name in ipairs(extraWindows) do
+        local frame = _G[name]
+        if frame and frame:IsShown() then return true end
+    end
+    return false
+end
 local HideUI
 local function IsQuestLogOpen()
     return QuestLogFrame and QuestLogFrame:IsShown()
@@ -113,6 +134,11 @@ local function Activity()
         if hidden then ApplyLootUI() end
         return
     end
+    if enabled and hidden and (IsTradeSkillOpen()
+        or (hidden == "tradeskill" and HasOpenPanel())) then
+        ApplyTradeSkillUI()
+        return
+    end
     if enabled and hidden and IsMapOpen() then
         ApplyMapUI()
         return
@@ -140,7 +166,7 @@ local function Activity()
         return
     end
     if enabled and (hidden == "combat" or hidden == "map" or hidden == "questlog"
-        or hidden == "loot") then
+        or hidden == "loot" or hidden == "tradeskill") then
         HideUI()
         return
     end
@@ -238,6 +264,10 @@ end
 
 local hookedPlayerFrame
 HideUI = function()
+    if IsTradeSkillOpen() then
+        ApplyTradeSkillUI()
+        return
+    end
     if IsQuestConversationOpen() then
         ApplyQuestUI()
         return
@@ -354,12 +384,12 @@ local function ApplySelectiveUI(mode)
     local keep, ancestors = { [controller] = true }, {}
     ApplyMirrorTimerUI(keep, ancestors)
     ApplyCastingUI(keep, ancestors)
-    if mode == "quest" or IsQuestConversationOpen() then
+    if mode == "quest" or mode == "tradeskill" or IsTradeSkillOpen() or IsQuestConversationOpen() then
         ApplyQuestTooltips(keep, ancestors)
     end
     -- Equipment comparisons use separate tooltips from the hovered item.
     local visibleFrames = { "GameTooltip", "ShoppingTooltip1", "ShoppingTooltip2" }
-    local windowMode = mode == "map" or mode == "questlog"
+    local windowMode = mode == "map" or mode == "questlog" or mode == "tradeskill"
     local modeFrames = windowMode and {}
         or mode == "loot" and { "LootFrame" }
         or mode == "quest" and questFrames
@@ -367,22 +397,28 @@ local function ApplySelectiveUI(mode)
     for _, name in ipairs(modeFrames) do
         visibleFrames[#visibleFrames + 1] = name
     end
-    -- Bags, map and quest log preserve open windows without revealing the HUD.
+    -- Window interactions preserve open panels without revealing the HUD.
+    if mode ~= "loot" then
+        for _, name in ipairs(tradeSkillFrames) do
+            local frame = _G[name]
+            if frame and frame:IsShown() then visibleFrames[#visibleFrames + 1] = name end
+        end
+    end
     if mode ~= "loot" and IsMapOpen() then
         visibleFrames[#visibleFrames + 1] = "WorldMapFrame"
     end
     if mode ~= "loot" and IsQuestLogOpen() then
         visibleFrames[#visibleFrames + 1] = "QuestLogFrame"
     end
-    if mode ~= "loot" and (AreBagsOpen() or IsMapOpen() or IsQuestLogOpen()) then
+    if mode ~= "loot" and (windowMode or IsTradeSkillOpen()
+        or AreBagsOpen() or IsMapOpen() or IsQuestLogOpen()) then
         for name in pairs(UIPanelWindows or {}) do
             local frame = _G[name]
             if frame and frame:IsShown() then
                 visibleFrames[#visibleFrames + 1] = name
             end
         end
-        for _, name in ipairs({ "GameMenuFrame", "SettingsPanel", "InterfaceOptionsFrame",
-            "ChatConfigFrame", "StaticPopup1", "StaticPopup2", "StaticPopup3", "StaticPopup4" }) do
+        for _, name in ipairs(extraWindows) do
             local frame = _G[name]
             if frame and frame:IsShown() then visibleFrames[#visibleFrames + 1] = name end
         end
@@ -457,6 +493,30 @@ ApplySpellbookUI = function() ApplySelectiveUI("spellbook") end
 ApplyMapUI = function() ApplySelectiveUI("map") end
 ApplyQuestLogUI = function() ApplySelectiveUI("questlog") end
 ApplyLootUI = function() ApplySelectiveUI("loot") end
+ApplyTradeSkillUI = function() ApplySelectiveUI("tradeskill") end
+
+local function TradeSkillClosed()
+    if not enabled or not hidden then return end
+    -- CLOSE and OnHide can both fire, in either order. Once idle, a second
+    -- notification must not count as new activity and restore the whole HUD.
+    if hidden == "idle" and not IsTradeSkillOpen() then return end
+    Activity()
+end
+
+local hookedTradeSkills = setmetatable({}, { __mode = "k" })
+local function HookTradeSkills()
+    for _, name in ipairs(tradeSkillFrames) do
+        local frame = _G[name]
+        if frame and not hookedTradeSkills[frame] then
+            hookedTradeSkills[frame] = true
+            frame:HookScript("OnShow", function()
+                if enabled and hidden then Activity() end
+            end)
+            frame:HookScript("OnHide", TradeSkillClosed)
+        end
+    end
+end
+HookTradeSkills()
 
 local hookedLoot
 local function HookLoot()
@@ -582,7 +642,8 @@ local function KeyboardActivity(_, key)
     -- Escape can close a window or clear the target. Suppress both key edges,
     -- since the window or target may already be gone when the key is released.
     if hidden and action == "TOGGLEGAMEMENU"
-        and (lootOpen or IsMapOpen() or IsQuestLogOpen() or UnitExists("target")) then
+        and (lootOpen or IsMapOpen() or IsQuestLogOpen() or IsTradeSkillOpen()
+            or hidden == "tradeskill" or UnitExists("target")) then
         targetClearingKeysDown[key] = true
         return
     end
@@ -626,6 +687,7 @@ for _, event in ipairs({
     "BAG_UPDATE_DELAYED", "LOOT_OPENED", "LOOT_CLOSED", "QUEST_DETAIL",
     "QUEST_COMPLETE", "QUEST_GREETING", "QUEST_PROGRESS", "GOSSIP_SHOW",
     "MERCHANT_SHOW", "PLAYER_EQUIPMENT_CHANGED",
+    "TRADE_SKILL_SHOW", "TRADE_SKILL_CLOSE", "CRAFT_SHOW", "CRAFT_CLOSE",
     "PLAYER_DEAD", "PLAYER_ALIVE", "PLAYER_UNGHOST",
 }) do
     controller:RegisterEvent(event)
@@ -641,7 +703,19 @@ controller:SetScript("OnEvent", function(_, event)
     HookQuestLog()
     HookSpellbook()
     HookLoot()
+    HookTradeSkills()
     if event == "ADDON_LOADED" then return end
+    if event == "TRADE_SKILL_CLOSE" or event == "CRAFT_CLOSE" then
+        TradeSkillClosed()
+        return
+    end
+    -- Profession events can precede OnShow. Select the policy before activity
+    -- gets a chance to restore the HUD; OnShow supplies the actual open frame.
+    if enabled and hidden and (event == "TRADE_SKILL_SHOW" or event == "CRAFT_SHOW") then
+        if InCombat() then ApplyCombatUI()
+        elseif lootOpen then ApplyLootUI() else ApplyTradeSkillUI() end
+        return
+    end
     -- Cast completion can precede LOOT_OPENED, and cancelled casts may never
     -- open loot. Neither case should restore the HUD in that gap.
     if enabled and hidden and event:match("^UNIT_SPELLCAST_") then
@@ -698,6 +772,11 @@ controller:SetScript("OnUpdate", function(_, elapsed)
         if hidden then ApplyLootUI() end
         ApplyBagButtons()
         return
+    elseif hidden and (IsTradeSkillOpen()
+        or (hidden == "tradeskill" and HasOpenPanel())) then
+        ApplyTradeSkillUI()
+        ApplyBagButtons()
+        return
     elseif hidden and IsMapOpen() then
         ApplyMapUI()
         ApplyBagButtons()
@@ -724,7 +803,7 @@ controller:SetScript("OnUpdate", function(_, elapsed)
         ApplyBagButtons()
         return
     elseif hidden == "bags" or hidden == "spellbook" or hidden == "map"
-        or hidden == "questlog" or hidden == "loot" then
+        or hidden == "questlog" or hidden == "loot" or hidden == "tradeskill" then
         RestoreUI()
         HideUI()
         ApplyBagButtons()
