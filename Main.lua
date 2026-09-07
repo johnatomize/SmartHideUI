@@ -8,6 +8,9 @@ local ApplyCombatUI, ApplyBagUI, ApplyQuestUI, ApplySpellbookUI, ApplyMapUI
 local ApplyQuestLogUI, ApplyLootUI, ApplyTradeSkillUI, ApplyTargetUI, ApplyChatUI
 local lootOpen = false
 local merchantOpen = false
+local ApplyMailUI
+local mailOpen = false
+local mailFrames = { "MailFrame", "OpenMailFrame" }
 local ApplyMerchantUI
 local questTrackerVisibleUntil = 0
 local function NeedsQuestTrackerUI()
@@ -169,6 +172,10 @@ local function Activity()
         if hidden then ApplyLootUI() end
         return
     end
+    if enabled and mailOpen then
+        if hidden then ApplyMailUI() end
+        return
+    end
     if enabled and hidden and merchantOpen then
         ApplyMerchantUI()
         return
@@ -215,7 +222,7 @@ local function Activity()
     end
     if enabled and (hidden == "combat" or hidden == "map" or hidden == "questlog"
         or hidden == "loot" or hidden == "tradeskill" or hidden == "target" or hidden == "chat"
-        or hidden == "merchant") then
+        or hidden == "merchant" or hidden == "mail") then
         HideUI()
         return
     end
@@ -330,6 +337,10 @@ end
 
 local hookedPlayerFrame
 HideUI = function()
+    if mailOpen then
+        ApplyMailUI()
+        return
+    end
     if merchantOpen then
         ApplyMerchantUI()
         return
@@ -473,13 +484,18 @@ local function ApplySelectiveUI(mode)
         for _, name in ipairs(auraFrames) do visibleFrames[#visibleFrames + 1] = name end
     end
     if mode == "combat" then ApplyPartyInviteUI(visibleFrames) end
-    local windowMode = mode == "map" or mode == "questlog" or mode == "tradeskill" or mode == "merchant"
+    local windowMode = mode == "map" or mode == "questlog" or mode == "tradeskill" or mode == "merchant" or mode == "mail"
     local modeFrames = (windowMode or mode == "target" or mode == "chat") and {}
         or mode == "loot" and { "LootFrame" }
         or mode == "quest" and questFrames
         or (mode == "combat" and combatFrames or actionFrames)
     for _, name in ipairs(modeFrames) do
         visibleFrames[#visibleFrames + 1] = name
+    end
+    -- The opened letter is a separate frame, so preserve it before OnShow.
+    -- Mail composes with every active policy, including bags and combat.
+    if mailOpen then
+        for _, name in ipairs(mailFrames) do visibleFrames[#visibleFrames + 1] = name end
     end
     if merchantOpen and mode ~= "loot" then
         visibleFrames[#visibleFrames + 1] = "MerchantFrame"
@@ -596,6 +612,7 @@ ApplyLootUI = function() ApplySelectiveUI("loot") end
 ApplyTradeSkillUI = function() ApplySelectiveUI("tradeskill") end
 ApplyTargetUI = function() ApplySelectiveUI("target") end
 ApplyChatUI = function() ApplySelectiveUI("chat") end
+ApplyMailUI = function() ApplySelectiveUI("mail") end
 ApplyMerchantUI = function() ApplySelectiveUI("merchant") end
 
 -- Track the event before Blizzard shows the window or opens bags. Both close
@@ -618,6 +635,30 @@ local function HookMerchant()
     MerchantFrame:HookScript("OnHide", MerchantClosed)
 end
 HookMerchant()
+
+-- MAIL_SHOW can precede both the mailbox frame and automatically opened bags.
+local function MailClosed()
+    if not mailOpen then return end
+    mailOpen = false
+    if enabled and hidden then
+        if hidden == "idle" then HideUI() else Activity() end
+    end
+end
+local hookedMail = setmetatable({}, { __mode = "k" })
+local function HookMail()
+    for _, name in ipairs(mailFrames) do
+        local frame = _G[name]
+        if frame and not hookedMail[frame] then
+            hookedMail[frame] = true
+            frame:HookScript("OnShow", function()
+                if name == "MailFrame" then mailOpen = true end
+                if enabled and hidden and mailOpen then Activity() end
+            end)
+            if name == "MailFrame" then frame:HookScript("OnHide", MailClosed) end
+        end
+    end
+end
+HookMail()
 
 local hookedChatEdits = setmetatable({}, { __mode = "k" })
 local function HookChatEdits()
@@ -829,7 +870,7 @@ local function KeyboardActivity(_, key)
     -- Escape can close a window, clear the target, or cancel gathering. Suppress
     -- both key edges: the window, target, or cast may be gone on key release.
     if hidden and action == "TOGGLEGAMEMENU"
-        and (lootOpen or IsMapOpen() or IsQuestLogOpen() or IsTradeSkillOpen()
+        and (mailOpen or lootOpen or IsMapOpen() or IsQuestLogOpen() or IsTradeSkillOpen()
             or hidden == "tradeskill" or UnitExists("target")
             or UnitCastingInfo("player") or UnitChannelInfo("player")) then
         targetClearingKeysDown[key] = true
@@ -875,7 +916,7 @@ for _, event in ipairs({
     "BAG_UPDATE_DELAYED", "LOOT_OPENED", "LOOT_CLOSED", "QUEST_DETAIL",
     "QUEST_COMPLETE", "QUEST_GREETING", "QUEST_PROGRESS", "GOSSIP_SHOW",
     "QUEST_WATCH_UPDATE",
-    "MERCHANT_SHOW", "MERCHANT_CLOSED", "PLAYER_EQUIPMENT_CHANGED",
+    "MERCHANT_SHOW", "MERCHANT_CLOSED", "MAIL_SHOW", "MAIL_CLOSED", "PLAYER_EQUIPMENT_CHANGED",
     "TRADE_SKILL_SHOW", "TRADE_SKILL_CLOSE", "CRAFT_SHOW", "CRAFT_CLOSE",
     "PLAYER_DEAD", "PLAYER_ALIVE", "PLAYER_UNGHOST",
     "CHAT_MSG_WHISPER", "CHAT_MSG_BN_WHISPER", "CHAT_MSG_SAY",
@@ -897,6 +938,15 @@ controller:SetScript("OnEvent", function(_, event)
     HookPartyPopups()
     HookChatEdits()
     HookMerchant()
+    HookMail()
+    if event == "MAIL_SHOW" then
+        mailOpen = true
+        if enabled and hidden then Activity() end
+        return
+    elseif event == "MAIL_CLOSED" then
+        MailClosed()
+        return
+    end
     if event == "MERCHANT_SHOW" then
         merchantOpen = true
         if enabled and hidden then Activity() end
@@ -918,6 +968,7 @@ controller:SetScript("OnEvent", function(_, event)
     if event == "PLAYER_LEAVING_WORLD" then
         questTrackerVisibleUntil = 0
         merchantOpen = false
+        mailOpen = false
     end
     if event == "CHAT_MSG_WHISPER" or event == "CHAT_MSG_BN_WHISPER"
         or event == "CHAT_MSG_SAY" then
@@ -1003,6 +1054,10 @@ controller:SetScript("OnUpdate", function(_, elapsed)
         if hidden then ApplyLootUI() end
         ApplyBagButtons()
         return
+    elseif mailOpen then
+        if hidden then ApplyMailUI() end
+        ApplyBagButtons()
+        return
     elseif hidden and merchantOpen then
         ApplyMerchantUI()
         ApplyBagButtons()
@@ -1047,7 +1102,7 @@ controller:SetScript("OnUpdate", function(_, elapsed)
         return
     elseif hidden == "bags" or hidden == "spellbook" or hidden == "map"
         or hidden == "questlog" or hidden == "loot" or hidden == "tradeskill"
-        or hidden == "target" or hidden == "chat" or hidden == "merchant" then
+        or hidden == "target" or hidden == "chat" or hidden == "merchant" or hidden == "mail" then
         RestoreUI()
         HideUI()
         ApplyBagButtons()

@@ -83,12 +83,12 @@ local function setup(visible)
     end
     for _, name in ipairs({ "LootFrame", "ContainerFrame1", "TradeSkillFrame",
         "CraftFrame", "QuestFrame", "GossipFrame", "SpellBookFrame", "WorldMapFrame",
-        "QuestLogFrame", "CharacterFrame", "MerchantFrame" }) do frame(name, env.UIParent, false) end
+        "QuestLogFrame", "CharacterFrame", "MerchantFrame", "MailFrame", "OpenMailFrame" }) do frame(name, env.UIParent, false) end
     frame("StackSplitFrame", env.UIParent, false, 0.85)
     frame("GameTooltip", env.UIParent, false, 1, "GameTooltip")
     env.UIPanelWindows = { TradeSkillFrame = {}, CraftFrame = {}, QuestFrame = {},
         GossipFrame = {}, SpellBookFrame = {}, WorldMapFrame = {}, QuestLogFrame = {},
-        CharacterFrame = {}, MerchantFrame = {} }
+        CharacterFrame = {}, MerchantFrame = {}, MailFrame = {} }
     env.SlashCmdList = {}
     env.CreateFrame = function(_, name) return frame(name, env.UIParent) end
     env.GetTime = function() return s.time end
@@ -766,6 +766,60 @@ for _, panel in ipairs({ "ContainerFrame1", "QuestLogFrame", "SpellBookFrame",
         end)
     end
 end
+
+for _, eventFirst in ipairs({ false, true }) do
+    test("mail entry, bags, letter and close ordering " .. tostring(eventFirst), function()
+        local s, e = setup()
+        s.key("OnKeyDown", "INTERACTTARGET"); s.hidden()
+        if eventFirst then s.event("MAIL_SHOW"); s.tick(); s.hidden() end
+        e.MailFrame:Show(); s.hidden()
+        s.event("MAIL_SHOW"); s.hidden()
+        assert(e.MailFrame.alpha == 1 and e.OpenMailFrame.alpha == 1)
+        assert(e.MainMenuBar.alpha == 0 or e.ActionButton1.alpha == 0)
+        e.ContainerFrame1:Show(); s.event("BAG_UPDATE_DELAYED"); s.hidden()
+        e.OpenMailFrame:Show(); s.hidden()
+        assert(e.OpenMailFrame.alpha == 1 and e.ContainerFrame1.alpha == 1)
+        assert(e.ActionButton1.alpha == 0.8)
+        s.key("OnKeyUp", "INTERACTTARGET")
+        s.key("OnKeyDown", "UNBOUND"); s.tick(4); s.hidden()
+        assert(e.OpenMailFrame.alpha == 1 and e.MailFrame.alpha == 1)
+        e.ContainerFrame1:Hide(); s.tick(); s.hidden()
+        assert(e.OpenMailFrame.alpha == 1)
+        assert(e.MainMenuBar.alpha == 0 or e.ActionButton1.alpha == 0)
+        e.ContainerFrame1:Show(); s.tick()
+        s.combat = true; s.event("PLAYER_REGEN_DISABLED"); s.hidden()
+        assert(e.OpenMailFrame.alpha == 1 and e.MailFrame.alpha == 1)
+        s.combat = false; s.event("PLAYER_REGEN_ENABLED"); s.hidden()
+        s.key("OnKeyDown", "TOGGLEGAMEMENU")
+        e.OpenMailFrame:Hide()
+        if eventFirst then s.event("MAIL_CLOSED"); s.hidden() end
+        e.MailFrame:Hide(); s.event("MAIL_CLOSED"); s.hidden()
+        assert(e.ContainerFrame1.alpha == 1 and e.ActionButton1.alpha == 0.8)
+        s.key("OnKeyUp", "TOGGLEGAMEMENU"); s.hidden()
+        e.ContainerFrame1:Hide(); s.tick(); s.hidden()
+        e.SlashCmdList.SMARTHIDEUI("off"); s.visible()
+        assert(e.MailFrame.alpha == 1 and e.OpenMailFrame.alpha == 1)
+    end)
+end
+
+test("mail close without bags remains minimal", function()
+    local s, e = setup()
+    s.event("MAIL_SHOW"); e.MailFrame:Show(); e.OpenMailFrame:Show()
+    e.OpenMailFrame:Hide(); e.MailFrame:Hide(); s.event("MAIL_CLOSED")
+    s.tick(); s.hidden()
+end)
+
+test("mail preserves visible entry with automatic bags and overrides", function()
+    local s, e = setup(true)
+    s.event("MAIL_SHOW"); e.MailFrame:Show(); e.ContainerFrame1:Show()
+    s.event("BAG_UPDATE_DELAYED"); e.OpenMailFrame:Show(); s.tick(4); s.visible()
+    for _, command in ipairs({ "show", "off" }) do
+        e.SlashCmdList.SMARTHIDEUI(command)
+        e.MailFrame:Hide(); s.event("MAIL_CLOSED")
+        s.event("MAIL_SHOW"); e.MailFrame:Show(); s.tick(4); s.visible()
+        assert(e.OpenMailFrame.alpha == 1)
+    end
+end)
 
 for _, failure in ipairs(failures) do print("FAIL " .. failure) end
 print(string.format("%d/%d regression checks passed", count - #failures, count))
