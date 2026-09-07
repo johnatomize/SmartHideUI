@@ -107,6 +107,12 @@ local function HasPlayerDebuff()
     return UnitDebuff("player", 1) ~= nil
 end
 
+-- Bandaging uses a channel. Compose aura visibility with the existing cast
+-- policy without adding action bars or unrelated HUD controls.
+local function NeedsAuras()
+    return UnitChannelInfo("player") ~= nil or HasPlayerDebuff()
+end
+
 local function NeedsPlayerFrame()
     if InCombat() then return true end
     if UnitHealth("player") < UnitHealthMax("player") then return true end
@@ -209,13 +215,20 @@ local function IsChatting()
     return false
 end
 
-local function IsMinimapBranch(region)
-    local current = Minimap
-    while current do
-        if current == region then return true end
-        current = current:GetParent()
+-- Preserve the whole minimap cluster, including its surrounding controls, in
+-- every policy. Ancestors only provide visibility; unrelated siblings still fade.
+local function ApplyMinimapUI(keep, ancestors)
+    for _, name in ipairs({ "MinimapCluster", "Minimap" }) do
+        local frame = _G[name]
+        if frame then
+            keep[frame] = true
+            local parent = frame:GetParent()
+            while parent and parent ~= UIParent do
+                ancestors[parent] = true
+                parent = parent:GetParent()
+            end
+        end
     end
-    return region == MinimapCluster
 end
 
 -- Breath can occupy any mirror timer slot. Preserve these warning bars even
@@ -251,7 +264,7 @@ local function ApplyCastingUI(keep, ancestors)
 end
 
 local function FadeRegion(region, playerAncestors, keepPlayer, keepAuras)
-    if region == controller or region == GameTooltip or IsMinimapBranch(region) then return end
+    if region == controller or region == GameTooltip then return end
     -- Blizzard animates these frames' alpha; hiding them every tick causes flicker.
     if region == ZoneTextFrame or region == SubZoneTextFrame then return end
     if (keepPlayer and region == PlayerFrame) or playerAncestors[region] or keepAuras[region] then
@@ -290,7 +303,8 @@ HideUI = function()
     -- Keep UIParent shown so protected action buttons and bindings still work.
     -- Preserve the minimap's parent chain without reparenting Blizzard frames.
     local keepPlayer, playerAncestors = NeedsPlayerFrame(), {}
-    local keepAuras, hasDebuff = {}, HasPlayerDebuff()
+    local keepAuras, showAuras = {}, NeedsAuras()
+    ApplyMinimapUI(keepAuras, playerAncestors)
     ApplyMirrorTimerUI(keepAuras, playerAncestors)
     ApplyCastingUI(keepAuras, playerAncestors)
     for _, name in ipairs(auraFrames) do
@@ -299,13 +313,13 @@ HideUI = function()
             if not hookedAuraFrames[frame] then
                 hooksecurefunc(frame, "SetAlpha", function(aura, alpha)
                     if alpha ~= 0 and enabled and hidden == "idle"
-                        and not InCombat() and not HasPlayerDebuff() then
+                        and not InCombat() and not NeedsAuras() then
                         FadeAlpha(aura)
                     end
                 end)
                 hookedAuraFrames[frame] = true
             end
-            if hasDebuff then
+            if showAuras then
                 keepAuras[frame] = true
                 local parent = frame:GetParent()
                 while parent and parent ~= UIParent do
@@ -405,6 +419,7 @@ end
 local function ApplySelectiveUI(mode)
     if hidden ~= mode then RestoreUI() end
     local keep, ancestors = { [controller] = true }, {}
+    ApplyMinimapUI(keep, ancestors)
     ApplyMirrorTimerUI(keep, ancestors)
     ApplyCastingUI(keep, ancestors)
     if mode == "quest" or mode == "tradeskill" or IsTradeSkillOpen() or IsQuestConversationOpen() then
@@ -412,6 +427,10 @@ local function ApplySelectiveUI(mode)
     end
     -- Equipment comparisons use separate tooltips from the hovered item.
     local visibleFrames = { "GameTooltip", "ShoppingTooltip1", "ShoppingTooltip2" }
+    -- Debuffs keep all auras visible in every interaction, including loot.
+    if NeedsAuras() then
+        for _, name in ipairs(auraFrames) do visibleFrames[#visibleFrames + 1] = name end
+    end
     if mode == "combat" then ApplyPartyInviteUI(visibleFrames) end
     local windowMode = mode == "map" or mode == "questlog" or mode == "tradeskill"
     local modeFrames = windowMode and {}
@@ -692,6 +711,13 @@ local function KeyboardActivity(_, key)
     if IsControlKeyDown() then binding = "CTRL-" .. binding end
     if IsAltKeyDown() then binding = "ALT-" .. binding end
     local action = GetBindingAction(binding)
+    -- Action bindings execute after OnKeyDown. Let the resulting cast/channel
+    -- or combat event choose visibility, and suppress release after completion.
+    if hidden and (action:match("^ACTIONBUTTON%d+$")
+        or action:match("^MULTIACTIONBAR%d+BUTTON%d+$")) then
+        targetClearingKeysDown[key] = true
+        return
+    end
     -- Target bindings run after this callback and may find no unit. Neither
     -- key edge should reveal the HUD; PLAYER_TARGET_CHANGED selects the policy.
     if action:match("^TARGET") or action == "ASSISTTARGET" then
@@ -811,7 +837,10 @@ controller:SetScript("OnEvent", function(_, event)
     if event == "UNIT_HEALTH" or event == "UNIT_MAXHEALTH"
         or event == "UNIT_POWER_UPDATE" or event == "UNIT_MAXPOWER"
         or event == "UNIT_DISPLAYPOWER" or event == "UNIT_AURA" then
-        if enabled and hidden == "idle" then HideUI() end
+        if enabled and hidden then
+            if hidden == "idle" then HideUI()
+            elseif event == "UNIT_AURA" then ApplySelectiveUI(hidden) end
+        end
         return
     end
     Activity()

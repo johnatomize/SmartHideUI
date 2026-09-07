@@ -46,10 +46,15 @@ local function setup(visible)
     end
     frame("UIParent")
     frame("WorldFrame")
-    frame("MinimapCluster", env.UIParent)
+    frame("MinimapParent", env.UIParent, true, 0.9)
+    frame("MinimapSibling", env.MinimapParent)
+    frame("MinimapCluster", env.MinimapParent, true, 0.85)
     frame("Minimap", env.MinimapCluster)
+    frame("MinimapMenu", env.MinimapCluster, true, 0.75)
     frame("TrackingPin", env.Minimap)
     frame("Hud", env.UIParent, true, 0.65)
+    frame("BuffFrame", env.UIParent, true, 0.8)
+    frame("DebuffFrame", env.UIParent, true, 0.9)
     frame("MainMenuBar", env.UIParent)
     frame("ActionButton1", env.MainMenuBar, true, 0.8)
     frame("CharacterMicroButton", env.MainMenuBar)
@@ -83,7 +88,7 @@ local function setup(visible)
     env.UnitPower = env.UnitHealth
     env.UnitPowerMax = env.UnitHealth
     env.UnitPowerType = function() return 0 end
-    env.UnitDebuff = function() end
+    env.UnitDebuff = function() return s.debuff end
     env.UnitCastingInfo = function() return s.cast end
     env.UnitChannelInfo = function() return s.channel end
     env.UnitExists = function(unit) return unit == "target" and s.target or false end
@@ -119,6 +124,10 @@ local function setup(visible)
     end
     function s.hidden()
         assert(env.Hud.alpha == 0, "unrelated HUD was revealed")
+        assert(env.MinimapParent.alpha == 0.9 and env.MinimapCluster.alpha == 0.85
+            and env.Minimap.alpha == 1 and env.MinimapMenu.alpha == 0.75,
+            "minimap or its surrounding controls were faded")
+        assert(env.MinimapSibling.alpha == 0, "unrelated minimap ancestor sibling revealed")
         assert(env.CharacterMicroButton.alpha == 0 or env.MainMenuBar.alpha == 0,
             "micro menu was revealed")
     end
@@ -158,6 +167,71 @@ local function test(name, callback)
     local ok, err = pcall(callback)
     if not ok then table.insert(failures, name .. ": " .. tostring(err)) end
 end
+
+for _, binding in ipairs({ "ACTIONBUTTON1", "MULTIACTIONBAR1BUTTON1" }) do
+    test("bandage channel via " .. binding, function()
+        local s, e = setup()
+        s.key("OnKeyDown", binding); s.hidden()
+        s.channel = "First Aid"; s.event("UNIT_SPELLCAST_CHANNEL_START")
+        s.hidden()
+        assert(e.BuffFrame.alpha == 0.8 and e.DebuffFrame.alpha == 0.9)
+        assert(e.MainMenuBar.alpha == 0 or e.ActionButton1.alpha == 0)
+        e.BuffFrame:SetAlpha(0.8)
+        s.key("OnKeyUp", binding); s.tick(); s.hidden()
+        assert(e.BuffFrame.alpha == 0.8)
+        s.channel = nil; s.event("UNIT_SPELLCAST_CHANNEL_STOP")
+        s.tick(); s.hidden()
+        assert(e.BuffFrame.alpha == 0 and e.DebuffFrame.alpha == 0)
+        e.SlashCmdList.SMARTHIDEUI("off"); s.visible()
+        assert(e.BuffFrame.alpha == 0.8 and e.DebuffFrame.alpha == 0.9)
+    end)
+end
+
+test("bandaging preserves visible UI and overrides", function()
+    local s, e = setup(true)
+    s.key("OnKeyDown", "ACTIONBUTTON1")
+    s.channel = "First Aid"; s.event("UNIT_SPELLCAST_CHANNEL_START")
+    s.key("OnKeyUp", "ACTIONBUTTON1"); s.tick(); s.visible()
+    for _, command in ipairs({ "show", "off" }) do
+        e.SlashCmdList.SMARTHIDEUI(command)
+        s.tick(4); s.visible()
+    end
+end)
+
+for _, panel in ipairs({ "LootFrame", "ContainerFrame1", "QuestFrame",
+    "TradeSkillFrame", "SpellBookFrame", "WorldMapFrame", "QuestLogFrame" }) do
+    test("debuff keeps auras visible in " .. panel, function()
+        local s, e = setup()
+        s.debuff = "Recently Bandaged"; s.event("UNIT_AURA")
+        assert(e.BuffFrame.alpha == 0.8 and e.DebuffFrame.alpha == 0.9)
+        if panel == "LootFrame" then s.loot() else e[panel]:Show(); s.tick() end
+        s.hidden()
+        assert(e.BuffFrame.alpha == 0.8 and e.DebuffFrame.alpha == 0.9)
+        s.debuff = nil; s.event("UNIT_AURA")
+        assert(e.BuffFrame.alpha == 0 and e.DebuffFrame.alpha == 0)
+        s.debuff = "Poison"; s.event("UNIT_AURA")
+        assert(e.BuffFrame.alpha == 0.8 and e.DebuffFrame.alpha == 0.9)
+        s.key("OnKeyDown", "UNRELATED_BINDING"); s.tick(); s.hidden()
+        if panel == "LootFrame" then s.close() else e[panel]:Hide(); s.tick() end
+        s.hidden()
+        assert(e.BuffFrame.alpha == 0.8 and e.DebuffFrame.alpha == 0.9)
+        e.SlashCmdList.SMARTHIDEUI("off"); s.visible()
+        assert(e.BuffFrame.alpha == 0.8 and e.DebuffFrame.alpha == 0.9)
+    end)
+end
+
+test("bandage auras compose with bags and combat", function()
+    local s, e = setup()
+    e.ContainerFrame1:Show(); s.tick()
+    s.channel = "First Aid"; s.event("UNIT_SPELLCAST_CHANNEL_START"); s.tick()
+    s.hidden(); assert(e.BuffFrame.alpha == 0.8 and e.ContainerFrame1.alpha == 1)
+    e.ContainerFrame1:Hide(); s.tick(); s.hidden()
+    assert(e.BuffFrame.alpha == 0.8)
+    s.combat = true; s.event("PLAYER_REGEN_DISABLED"); s.hidden()
+    assert(e.ActionButton1.alpha == 0.8 and e.BuffFrame.alpha == 0.8)
+    s.channel = nil; s.event("UNIT_SPELLCAST_CHANNEL_STOP")
+    s.combat = false; s.event("PLAYER_REGEN_ENABLED"); s.tick(); s.hidden()
+end)
 
 for _, spell in ipairs({ "Mining", "Herb Gathering", "Skinning" }) do
     test(spell .. ": cast and loot remain selective", function()
@@ -317,7 +391,7 @@ for _, name in ipairs({ "Minimap", "MinimapCluster", "TrackingPin" }) do
         e.GameTooltip:Show()
         s.tick(); s.hidden()
         s.tick(4); s.hidden()
-        assert(e.Minimap.alpha == 1 and e.MinimapCluster.alpha == 1)
+        assert(e.Minimap.alpha == 1 and e.MinimapCluster.alpha == 0.85)
         assert(e.GameTooltip:IsShown() and e.GameTooltip.alpha == 1)
         e.GameTooltip:Hide()
         e.GetMouseFoci = function() return { e.WorldFrame } end
@@ -401,6 +475,25 @@ test("existing invite survives combat entry and manual overrides", function()
         assert(e.StaticPopup1.alpha == 0.85 and e.PopupSibling.alpha == 1)
     end
 end)
+
+for _, visible in ipairs({ false, true }) do
+    test("minimap controls survive combat, death, loot, and panels: visible=" .. tostring(visible), function()
+        local s, e = setup(visible)
+        s.target = true; s.event("PLAYER_TARGET_CHANGED")
+        s.combat = true; s.event("PLAYER_REGEN_DISABLED"); s.hidden()
+        s.key("OnKeyDown", "ACTIONBUTTON1"); s.tick(); s.hidden()
+        s.deadTarget = true; s.combat = false; s.event("PLAYER_REGEN_ENABLED")
+        s.tick(); s.hidden()
+        s.loot(); s.hidden(); s.close(); s.hidden()
+        s.target = false; s.event("PLAYER_TARGET_CHANGED"); s.hidden()
+        e.QuestLogFrame:Show(); s.tick(); s.hidden()
+        e.QuestLogFrame:Hide(); s.tick()
+        assert(e.MinimapMenu.alpha == 0.75 and e.MinimapCluster.alpha == 0.85)
+        e.SlashCmdList.SMARTHIDEUI("off"); s.visible()
+        assert(e.MinimapParent.alpha == 0.9 and e.MinimapSibling.alpha == 1)
+        assert(e.MinimapMenu.alpha == 0.75 and e.MinimapCluster.alpha == 0.85)
+    end)
+end
 
 for _, failure in ipairs(failures) do print("FAIL " .. failure) end
 print(string.format("%d/%d regression checks passed", count - #failures, count))
