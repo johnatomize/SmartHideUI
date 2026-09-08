@@ -337,6 +337,32 @@ test("open bags retain their controls after looting", function()
     e.ContainerFrame1:Hide(); s.event("BAG_UPDATE_DELAYED"); s.tick(); s.hidden()
     assert(e.MainMenuBar.alpha == 0 or e.ActionButton1.alpha == 0)
 end)
+test("bags compose with quest conversations", function()
+    local s, e = setup()
+    e.QuestFrame:Show(); s.event("QUEST_DETAIL"); s.hidden()
+    assert(e.QuestFrame.alpha == 1)
+    assert(e.MainMenuBar.alpha == 0 or e.ActionButton1.alpha == 0)
+
+    e.ContainerFrame1:Show(); s.event("BAG_UPDATE_DELAYED"); s.tick(); s.hidden()
+    assert(e.QuestFrame.alpha == 1 and e.ContainerFrame1.alpha == 1,
+        "quest or bag window is faded")
+    assert(e.MainMenuBarBackpackButton.alpha == 1,
+        "bag buttons are faded during the quest conversation")
+    assert(e.ActionButton1.alpha == 0.8,
+        "open bags lack their action controls during the quest conversation")
+
+    -- Activity and refreshes must retain the composed policy.
+    s.key("OnKeyDown", "UNRELATED_BINDING"); s.tick(); s.hidden()
+    assert(e.QuestFrame.alpha == 1 and e.ContainerFrame1.alpha == 1)
+
+    -- Closing either side returns to the interaction that remains open.
+    e.ContainerFrame1:Hide(); s.tick(); s.hidden()
+    assert(e.QuestFrame.alpha == 1)
+    assert(e.MainMenuBar.alpha == 0 or e.ActionButton1.alpha == 0)
+    e.ContainerFrame1:Show(); s.tick(); e.QuestFrame:Hide(); s.tick(); s.hidden()
+    assert(e.ContainerFrame1.alpha == 1 and e.ActionButton1.alpha == 0.8)
+    e.ContainerFrame1:Hide(); s.tick(); s.hidden()
+end)
 test("combat overrides gathering without full HUD", function()
     local s, e = setup()
     s.start("Skinning"); s.combat = true; s.event("PLAYER_REGEN_DISABLED")

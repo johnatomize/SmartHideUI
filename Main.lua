@@ -87,7 +87,7 @@ local function AreBagsOpen()
 end
 
 local function ApplyBagButtons()
-    local show = not enabled or (hidden ~= "quest" and hidden ~= "loot" and AreBagsOpen())
+    local show = not enabled or (hidden ~= "loot" and AreBagsOpen())
     for _, name in ipairs(bagButtons) do
         local button = _G[name]
         if button then
@@ -605,9 +605,14 @@ local function ApplySelectiveUI(mode)
     if mode == "combat" and lootOpen then
         visibleFrames[#visibleFrames + 1] = "LootFrame"
     end
-    if mode ~= "quest" and AreBagsOpen() then
+    if AreBagsOpen() then
         if mode ~= "loot" then
             for _, name in ipairs(bagButtons) do visibleFrames[#visibleFrames + 1] = name end
+        end
+        -- Bags opened during a quest conversation remain part of quest mode,
+        -- but still need the same controls used by the normal bag policy.
+        if mode == "quest" then
+            for _, name in ipairs(actionFrames) do visibleFrames[#visibleFrames + 1] = name end
         end
         visibleFrames[#visibleFrames + 1] = "ContainerFrameCombinedBags"
         for index = 1, 13 do
