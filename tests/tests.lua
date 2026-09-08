@@ -209,6 +209,31 @@ test("bandaging preserves visible UI and overrides", function()
     end
 end)
 
+test("character binding reveals only the character window", function()
+    local s, e = setup()
+    s.key("OnKeyDown", "TOGGLECHARACTER0")
+    s.hidden()
+    e.CharacterFrame:Show(); s.tick()
+    s.hidden(); assert(e.CharacterFrame.alpha == 1)
+    s.key("OnKeyUp", "TOGGLECHARACTER0"); s.hidden()
+    s.key("OnKeyDown", "UNRELATED_BINDING"); s.tick(); s.hidden()
+    assert(e.CharacterFrame.alpha == 1)
+    s.key("OnKeyDown", "TOGGLEGAMEMENU")
+    e.CharacterFrame:Hide()
+    s.key("OnKeyUp", "TOGGLEGAMEMENU"); s.tick(); s.hidden()
+end)
+
+test("character window preserves visible entry and manual overrides", function()
+    local s, e = setup(true)
+    s.key("OnKeyDown", "TOGGLECHARACTER0")
+    e.CharacterFrame:Show(); s.tick(4); s.visible()
+    for _, command in ipairs({ "show", "off" }) do
+        e.SlashCmdList.SMARTHIDEUI(command)
+        s.key("OnKeyDown", "TOGGLECHARACTER0")
+        e.CharacterFrame:Show(); s.tick(4); s.visible()
+    end
+end)
+
 for _, panel in ipairs({ "LootFrame", "ContainerFrame1", "QuestFrame",
     "TradeSkillFrame", "SpellBookFrame", "WorldMapFrame", "QuestLogFrame" }) do
     test("debuff keeps auras visible in " .. panel, function()

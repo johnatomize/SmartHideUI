@@ -6,6 +6,7 @@ local originalAlpha = {}
 local unsupportedAlpha = setmetatable({}, { __mode = "k" })
 local ApplyCombatUI, ApplyBagUI, ApplyQuestUI, ApplySpellbookUI, ApplyMapUI
 local ApplyQuestLogUI, ApplyLootUI, ApplyTradeSkillUI, ApplyTargetUI, ApplyChatUI
+local ApplyCharacterUI
 local lootOpen = false
 local merchantOpen = false
 local ApplyMailUI
@@ -46,6 +47,9 @@ local function IsMapOpen()
 end
 local function IsSpellbookOpen()
     return SpellBookFrame and SpellBookFrame:IsShown()
+end
+local function IsCharacterOpen()
+    return CharacterFrame and CharacterFrame:IsShown()
 end
 local questFrames = { "QuestFrame", "GossipFrame" }
 local function IsQuestConversationOpen()
@@ -193,6 +197,10 @@ local function Activity()
         ApplyQuestLogUI()
         return
     end
+    if enabled and hidden and IsCharacterOpen() then
+        ApplyCharacterUI()
+        return
+    end
     if enabled and hidden and (hidden == "spellbook" or IsSpellbookOpen()) then
         ApplySpellbookUI()
         return
@@ -220,7 +228,7 @@ local function Activity()
         HideUI()
         return
     end
-    if enabled and (hidden == "combat" or hidden == "map" or hidden == "questlog"
+    if enabled and (hidden == "combat" or hidden == "map" or hidden == "questlog" or hidden == "character"
         or hidden == "loot" or hidden == "tradeskill" or hidden == "target" or hidden == "chat"
         or hidden == "merchant" or hidden == "mail") then
         HideUI()
@@ -347,6 +355,10 @@ HideUI = function()
     end
     if IsTradeSkillOpen() then
         ApplyTradeSkillUI()
+        return
+    end
+    if IsCharacterOpen() then
+        ApplyCharacterUI()
         return
     end
     if IsQuestConversationOpen() then
@@ -484,7 +496,8 @@ local function ApplySelectiveUI(mode)
         for _, name in ipairs(auraFrames) do visibleFrames[#visibleFrames + 1] = name end
     end
     if mode == "combat" then ApplyPartyInviteUI(visibleFrames) end
-    local windowMode = mode == "map" or mode == "questlog" or mode == "tradeskill" or mode == "merchant" or mode == "mail"
+    local windowMode = mode == "map" or mode == "questlog" or mode == "character"
+        or mode == "tradeskill" or mode == "merchant" or mode == "mail"
     local modeFrames = (windowMode or mode == "target" or mode == "chat") and {}
         or mode == "loot" and { "LootFrame" }
         or mode == "quest" and questFrames
@@ -523,8 +536,11 @@ local function ApplySelectiveUI(mode)
     if mode ~= "loot" and IsQuestLogOpen() then
         visibleFrames[#visibleFrames + 1] = "QuestLogFrame"
     end
+    if mode ~= "loot" and IsCharacterOpen() then
+        visibleFrames[#visibleFrames + 1] = "CharacterFrame"
+    end
     if mode ~= "loot" and (windowMode or IsTradeSkillOpen()
-        or AreBagsOpen() or IsMapOpen() or IsQuestLogOpen()) then
+        or AreBagsOpen() or IsMapOpen() or IsQuestLogOpen() or IsCharacterOpen()) then
         for name in pairs(UIPanelWindows or {}) do
             local frame = _G[name]
             if frame and frame:IsShown() then
@@ -608,6 +624,7 @@ ApplyQuestUI = function() ApplySelectiveUI("quest") end
 ApplySpellbookUI = function() ApplySelectiveUI("spellbook") end
 ApplyMapUI = function() ApplySelectiveUI("map") end
 ApplyQuestLogUI = function() ApplySelectiveUI("questlog") end
+ApplyCharacterUI = function() ApplySelectiveUI("character") end
 ApplyLootUI = function() ApplySelectiveUI("loot") end
 ApplyTradeSkillUI = function() ApplySelectiveUI("tradeskill") end
 ApplyTargetUI = function() ApplySelectiveUI("target") end
@@ -754,6 +771,22 @@ local function HookQuestLog()
 end
 HookQuestLog()
 
+local hookedCharacter
+local function HookCharacter()
+    if not CharacterFrame or hookedCharacter == CharacterFrame then return end
+    hookedCharacter = CharacterFrame
+    CharacterFrame:HookScript("OnShow", function()
+        if enabled and hidden then
+            if InCombat() then ApplyCombatUI()
+            elseif lootOpen then ApplyLootUI() else ApplyCharacterUI() end
+        end
+    end)
+    CharacterFrame:HookScript("OnHide", function()
+        if enabled and hidden == "character" then Activity() end
+    end)
+end
+HookCharacter()
+
 local hookedMap
 local function HookMap()
     if not WorldMapFrame or hookedMap == WorldMapFrame then return end
@@ -870,15 +903,16 @@ local function KeyboardActivity(_, key)
     -- Escape can close a window, clear the target, or cancel gathering. Suppress
     -- both key edges: the window, target, or cast may be gone on key release.
     if hidden and action == "TOGGLEGAMEMENU"
-        and (mailOpen or lootOpen or IsMapOpen() or IsQuestLogOpen() or IsTradeSkillOpen()
-            or hidden == "tradeskill" or UnitExists("target")
+        and (mailOpen or lootOpen or IsMapOpen() or IsQuestLogOpen() or IsCharacterOpen()
+            or IsTradeSkillOpen() or hidden == "tradeskill" or hidden == "character" or UnitExists("target")
             or UnitCastingInfo("player") or UnitChannelInfo("player")) then
         targetClearingKeysDown[key] = true
         return
     end
     -- The binding runs after keyboard activity; wait for the panel's OnShow.
     if action == "TOGGLESPELLBOOK" or action == "TOGGLEPETBOOK"
-        or action == "TOGGLEWORLDMAP" or action == "TOGGLEQUESTLOG" then return end
+        or action == "TOGGLEWORLDMAP" or action == "TOGGLEQUESTLOG"
+        or action:match("^TOGGLECHARACTER") then return end
     if hidden and (action == "INTERACTTARGET" or action == "INTERACTMOUSEOVER") then
         return
     end
@@ -932,6 +966,7 @@ end
 controller:SetScript("OnEvent", function(_, event)
     HookMap()
     HookQuestLog()
+    HookCharacter()
     HookSpellbook()
     HookLoot()
     HookTradeSkills()
@@ -1075,6 +1110,10 @@ controller:SetScript("OnUpdate", function(_, elapsed)
         ApplyQuestLogUI()
         ApplyBagButtons()
         return
+    elseif hidden and IsCharacterOpen() then
+        ApplyCharacterUI()
+        ApplyBagButtons()
+        return
     elseif hidden and IsSpellbookOpen() then
         ApplySpellbookUI()
         ApplyBagButtons()
@@ -1101,7 +1140,7 @@ controller:SetScript("OnUpdate", function(_, elapsed)
         ApplyBagButtons()
         return
     elseif hidden == "bags" or hidden == "spellbook" or hidden == "map"
-        or hidden == "questlog" or hidden == "loot" or hidden == "tradeskill"
+        or hidden == "questlog" or hidden == "character" or hidden == "loot" or hidden == "tradeskill"
         or hidden == "target" or hidden == "chat" or hidden == "merchant" or hidden == "mail" then
         RestoreUI()
         HideUI()
