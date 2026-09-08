@@ -83,12 +83,13 @@ local function setup(visible)
     end
     for _, name in ipairs({ "LootFrame", "ContainerFrame1", "TradeSkillFrame",
         "CraftFrame", "QuestFrame", "GossipFrame", "SpellBookFrame", "WorldMapFrame",
-        "QuestLogFrame", "CharacterFrame", "MerchantFrame", "MailFrame", "OpenMailFrame" }) do frame(name, env.UIParent, false) end
+        "QuestLogFrame", "CharacterFrame", "MerchantFrame", "ClassTrainerFrame",
+        "MailFrame", "OpenMailFrame" }) do frame(name, env.UIParent, false) end
     frame("StackSplitFrame", env.UIParent, false, 0.85)
     frame("GameTooltip", env.UIParent, false, 1, "GameTooltip")
     env.UIPanelWindows = { TradeSkillFrame = {}, CraftFrame = {}, QuestFrame = {},
         GossipFrame = {}, SpellBookFrame = {}, WorldMapFrame = {}, QuestLogFrame = {},
-        CharacterFrame = {}, MerchantFrame = {}, MailFrame = {} }
+        CharacterFrame = {}, MerchantFrame = {}, ClassTrainerFrame = {}, MailFrame = {} }
     env.SlashCmdList = {}
     env.CreateFrame = function(_, name) return frame(name, env.UIParent) end
     env.GetTime = function() return s.time end
@@ -774,6 +775,43 @@ test("vendor without bags preserves visible entry and overrides", function()
     end
 end)
 
+for _, eventFirst in ipairs({ false, true }) do
+    test("trainer entry and close ordering eventFirst=" .. tostring(eventFirst), function()
+        local s, e = setup()
+        s.key("OnKeyDown", "INTERACTTARGET"); s.hidden()
+        if eventFirst then s.event("TRAINER_SHOW"); s.hidden() end
+        e.ClassTrainerFrame:Show(); s.hidden()
+        s.event("TRAINER_SHOW"); s.hidden()
+        assert(e.ClassTrainerFrame.alpha == 1, "trainer window is faded")
+        assert(e.MainMenuBar.alpha == 0 or e.ActionButton1.alpha == 0,
+            "trainer interaction revealed action controls")
+        s.key("OnKeyUp", "INTERACTTARGET"); s.tick(4); s.hidden()
+        assert(e.ClassTrainerFrame.alpha == 1, "trainer window did not retain its policy")
+        e.ContainerFrame1:Show(); s.tick(); s.hidden()
+        assert(e.ClassTrainerFrame.alpha == 1 and e.ContainerFrame1.alpha == 1)
+        assert(e.ActionButton1.alpha == 0.8, "open bags lack their action controls")
+        e.ContainerFrame1:Hide(); s.tick(); s.hidden()
+        s.combat = true; s.event("PLAYER_REGEN_DISABLED"); s.hidden()
+        assert(e.ClassTrainerFrame.alpha == 1 and e.ActionButton1.alpha == 0.8)
+        s.combat = false; s.event("PLAYER_REGEN_ENABLED"); s.hidden()
+        if eventFirst then s.event("TRAINER_CLOSED"); s.hidden() end
+        e.ClassTrainerFrame:Hide()
+        s.event("TRAINER_CLOSED"); s.tick(); s.hidden()
+        e.SlashCmdList.SMARTHIDEUI("off"); s.visible()
+        assert(e.ClassTrainerFrame.alpha == 1)
+    end)
+end
+
+test("trainer preserves visible entry and manual overrides", function()
+    local s, e = setup(true)
+    s.event("TRAINER_SHOW"); e.ClassTrainerFrame:Show(); s.tick(4); s.visible()
+    for _, command in ipairs({ "show", "off" }) do
+        e.SlashCmdList.SMARTHIDEUI(command)
+        e.ClassTrainerFrame:Hide(); s.event("TRAINER_CLOSED")
+        s.event("TRAINER_SHOW"); e.ClassTrainerFrame:Show(); s.tick(4); s.visible()
+    end
+end)
+
 for _, visible in ipairs({ false, true }) do
     test("vendor quantity picker with visible entry " .. tostring(visible), function()
         local s, e = setup(visible)
@@ -795,7 +833,8 @@ for _, visible in ipairs({ false, true }) do
 end
 
 for _, panel in ipairs({ "ContainerFrame1", "QuestLogFrame", "SpellBookFrame",
-    "WorldMapFrame", "TradeSkillFrame", "QuestFrame", "LootFrame", "CharacterFrame" }) do
+    "WorldMapFrame", "TradeSkillFrame", "ClassTrainerFrame", "QuestFrame", "LootFrame",
+    "CharacterFrame" }) do
     for _, visible in ipairs({ false, true }) do
         test("area text animation with " .. panel .. " visible=" .. tostring(visible), function()
             local s, e = setup(visible)

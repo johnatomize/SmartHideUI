@@ -9,10 +9,13 @@ local ApplyQuestLogUI, ApplyLootUI, ApplyTradeSkillUI, ApplyTargetUI, ApplyChatU
 local ApplyCharacterUI
 local lootOpen = false
 local merchantOpen = false
+local trainerOpen = false
 local ApplyMailUI
 local mailOpen = false
 local mailFrames = { "MailFrame", "OpenMailFrame" }
 local ApplyMerchantUI
+local ApplyTrainerUI
+local trainerFrames = { "ClassTrainerFrame" }
 local questTrackerVisibleUntil = 0
 local function NeedsQuestTrackerUI()
     return GetTime() < questTrackerVisibleUntil
@@ -192,6 +195,10 @@ local function Activity()
         ApplyMerchantUI()
         return
     end
+    if enabled and hidden and trainerOpen then
+        ApplyTrainerUI()
+        return
+    end
     if enabled and hidden and (IsTradeSkillOpen()
         or (hidden == "tradeskill" and HasOpenPanel())) then
         ApplyTradeSkillUI()
@@ -361,6 +368,10 @@ HideUI = function()
         ApplyMerchantUI()
         return
     end
+    if trainerOpen then
+        ApplyTrainerUI()
+        return
+    end
     if IsTradeSkillOpen() then
         ApplyTradeSkillUI()
         return
@@ -506,7 +517,7 @@ local function ApplySelectiveUI(mode)
     end
     ApplyInteractionPopups(visibleFrames, mode)
     local windowMode = mode == "map" or mode == "questlog" or mode == "character"
-        or mode == "tradeskill" or mode == "merchant" or mode == "mail"
+        or mode == "tradeskill" or mode == "merchant" or mode == "trainer" or mode == "mail"
     local modeFrames = (windowMode or mode == "target" or mode == "chat") and {}
         or mode == "loot" and { "LootFrame" }
         or mode == "quest" and questFrames
@@ -522,6 +533,11 @@ local function ApplySelectiveUI(mode)
     if merchantOpen and mode ~= "loot" then
         visibleFrames[#visibleFrames + 1] = "MerchantFrame"
         visibleFrames[#visibleFrames + 1] = "StackSplitFrame"
+    end
+    -- The trainer is a load-on-demand panel and may be created after its show
+    -- event. Preserve its named frame as soon as it becomes available.
+    if trainerOpen then
+        for _, name in ipairs(trainerFrames) do visibleFrames[#visibleFrames + 1] = name end
     end
     -- Every living target needs its portrait; enemies also need combat controls.
     if mode ~= "combat" and HasPortraitTarget() then
@@ -640,6 +656,7 @@ ApplyTargetUI = function() ApplySelectiveUI("target") end
 ApplyChatUI = function() ApplySelectiveUI("chat") end
 ApplyMailUI = function() ApplySelectiveUI("mail") end
 ApplyMerchantUI = function() ApplySelectiveUI("merchant") end
+ApplyTrainerUI = function() ApplySelectiveUI("trainer") end
 
 -- Track the event before Blizzard shows the window or opens bags. Both close
 -- notifications may arrive; neither should become generic full-UI activity.
@@ -661,6 +678,29 @@ local function HookMerchant()
     MerchantFrame:HookScript("OnHide", MerchantClosed)
 end
 HookMerchant()
+
+local function TrainerClosed()
+    if not trainerOpen then return end
+    trainerOpen = false
+    if enabled and hidden then
+        if hidden == "idle" then HideUI() else Activity() end
+    end
+end
+local hookedTrainers = setmetatable({}, { __mode = "k" })
+local function HookTrainer()
+    for _, name in ipairs(trainerFrames) do
+        local frame = _G[name]
+        if frame and not hookedTrainers[frame] then
+            hookedTrainers[frame] = true
+            frame:HookScript("OnShow", function()
+                trainerOpen = true
+                if enabled and hidden then Activity() end
+            end)
+            frame:HookScript("OnHide", TrainerClosed)
+        end
+    end
+end
+HookTrainer()
 
 -- MAIL_SHOW can precede both the mailbox frame and automatically opened bags.
 local function MailClosed()
@@ -921,7 +961,8 @@ local function KeyboardActivity(_, key)
     -- both key edges: the window, target, or cast may be gone on key release.
     if hidden and action == "TOGGLEGAMEMENU"
         and (mailOpen or lootOpen or IsMapOpen() or IsQuestLogOpen() or IsCharacterOpen()
-            or IsTradeSkillOpen() or hidden == "tradeskill" or hidden == "character" or UnitExists("target")
+            or IsTradeSkillOpen() or trainerOpen or hidden == "tradeskill" or hidden == "trainer"
+            or hidden == "character" or UnitExists("target")
             or UnitCastingInfo("player") or UnitChannelInfo("player")) then
         targetClearingKeysDown[key] = true
         return
@@ -969,6 +1010,7 @@ for _, event in ipairs({
     "CONFIRM_BINDER",
     "QUEST_WATCH_UPDATE",
     "MERCHANT_SHOW", "MERCHANT_CLOSED", "MAIL_SHOW", "MAIL_CLOSED", "PLAYER_EQUIPMENT_CHANGED",
+    "TRAINER_SHOW", "TRAINER_CLOSED",
     "TRADE_SKILL_SHOW", "TRADE_SKILL_CLOSE", "CRAFT_SHOW", "CRAFT_CLOSE",
     "PLAYER_DEAD", "PLAYER_ALIVE", "PLAYER_UNGHOST",
     "CHAT_MSG_WHISPER", "CHAT_MSG_BN_WHISPER", "CHAT_MSG_SAY",
@@ -991,6 +1033,7 @@ controller:SetScript("OnEvent", function(_, event)
     HookInteractionPopups()
     HookChatEdits()
     HookMerchant()
+    HookTrainer()
     HookMail()
     if event == "MAIL_SHOW" then
         mailOpen = true
@@ -1008,6 +1051,14 @@ controller:SetScript("OnEvent", function(_, event)
         MerchantClosed()
         return
     end
+    if event == "TRAINER_SHOW" then
+        trainerOpen = true
+        if enabled and hidden then Activity() end
+        return
+    elseif event == "TRAINER_CLOSED" then
+        TrainerClosed()
+        return
+    end
     -- Unlike QUEST_LOG_UPDATE, this event reports objective progress rather
     -- than general log refreshes. Do not count it as full-UI activity.
     if event == "QUEST_WATCH_UPDATE" then
@@ -1021,6 +1072,7 @@ controller:SetScript("OnEvent", function(_, event)
     if event == "PLAYER_LEAVING_WORLD" then
         questTrackerVisibleUntil = 0
         merchantOpen = false
+        trainerOpen = false
         mailOpen = false
     end
     if event == "CHAT_MSG_WHISPER" or event == "CHAT_MSG_BN_WHISPER"
@@ -1115,6 +1167,10 @@ controller:SetScript("OnUpdate", function(_, elapsed)
         ApplyMerchantUI()
         ApplyBagButtons()
         return
+    elseif hidden and trainerOpen then
+        ApplyTrainerUI()
+        ApplyBagButtons()
+        return
     elseif hidden and (IsTradeSkillOpen()
         or (hidden == "tradeskill" and HasOpenPanel())) then
         ApplyTradeSkillUI()
@@ -1159,7 +1215,8 @@ controller:SetScript("OnUpdate", function(_, elapsed)
         return
     elseif hidden == "bags" or hidden == "spellbook" or hidden == "map"
         or hidden == "questlog" or hidden == "character" or hidden == "loot" or hidden == "tradeskill"
-        or hidden == "target" or hidden == "chat" or hidden == "merchant" or hidden == "mail" then
+        or hidden == "target" or hidden == "chat" or hidden == "merchant" or hidden == "trainer"
+        or hidden == "mail" then
         RestoreUI()
         HideUI()
         ApplyBagButtons()
