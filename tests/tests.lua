@@ -411,6 +411,18 @@ test("friendly player portrait persists through activity and overlapping modes",
     assert(e.TargetFrame.alpha == 0)
 end)
 
+test("friendly NPC selection reveals only its portrait", function()
+    local s, e = setup()
+    s.target, s.friendly, s.playerTarget = true, true, false
+    s.event("PLAYER_TARGET_CHANGED"); s.hidden()
+    assert(e.TargetFrame.alpha == 0.9 and e.PlayerFrame.alpha == 0)
+    assert(e.MainMenuBar.alpha == 0 or e.ActionButton1.alpha == 0)
+    s.key("OnKeyDown", "UNRELATED_BINDING"); s.tick(4); s.hidden()
+    assert(e.TargetFrame.alpha == 0.9)
+    s.target = false; s.event("PLAYER_TARGET_CHANGED"); s.hidden()
+    assert(e.TargetFrame.alpha == 0)
+end)
+
 test("friendly player targeting respects visible UI and overrides", function()
     local s, e = setup(true)
     s.target, s.friendly, s.playerTarget = true, true, true
@@ -435,7 +447,8 @@ test("mouse selection composes with bags and combat", function()
     s.combat = false; s.event("PLAYER_REGEN_ENABLED"); s.hidden()
     assert(e.TargetFrame.alpha == 0.9)
     s.friendly = true; s.event("PLAYER_TARGET_CHANGED"); s.hidden()
-    assert(e.TargetFrame.alpha == 0)
+    assert(e.TargetFrame.alpha == 0.9)
+    assert(e.MainMenuBar.alpha == 0 or e.ActionButton1.alpha == 0)
 end)
 
 test("target death returns to idle", function()

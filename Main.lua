@@ -104,8 +104,7 @@ local function HasEnemyTarget()
 end
 
 local function HasPortraitTarget()
-    return HasEnemyTarget() or (UnitExists("target") and UnitIsPlayer("target")
-        and not UnitIsDeadOrGhost("target"))
+    return UnitExists("target") and not UnitIsDeadOrGhost("target")
 end
 
 local auraFrames = { "BuffFrame", "DebuffFrame", "TemporaryEnchantFrame" }
@@ -514,7 +513,7 @@ local function ApplySelectiveUI(mode)
         visibleFrames[#visibleFrames + 1] = "MerchantFrame"
         visibleFrames[#visibleFrames + 1] = "StackSplitFrame"
     end
-    -- Player targets need their portrait; enemies also need combat controls.
+    -- Every living target needs its portrait; enemies also need combat controls.
     if mode ~= "combat" and HasPortraitTarget() then
         visibleFrames[#visibleFrames + 1] = "TargetFrame"
     end
