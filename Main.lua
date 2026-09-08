@@ -59,6 +59,15 @@ local function IsQuestConversationOpen()
     end
     return false
 end
+local function IsBinderConfirmationOpen()
+    for index = 1, STATICPOPUP_NUMDIALOGS or 4 do
+        local frame = _G["StaticPopup" .. index]
+        if frame and frame:IsShown() and frame.which == "CONFIRM_BINDER" then
+            return true
+        end
+    end
+    return false
+end
 local bagButtonAlpha = {}
 local bagButtons = {
     "MainMenuBarBackpackButton", "CharacterBag0Slot", "CharacterBag1Slot",
@@ -461,11 +470,12 @@ for index = 1, 3 do
     combatFrames[#combatFrames + 1] = "TempEnchant" .. index
 end
 
-local function ApplyPartyInviteUI(visibleFrames)
+local function ApplyInteractionPopups(visibleFrames, mode)
     for index = 1, STATICPOPUP_NUMDIALOGS or 4 do
         local name = "StaticPopup" .. index
         local frame = _G[name]
-        if frame and frame:IsShown() and frame.which == "PARTY_INVITE" then
+        if frame and frame:IsShown() and (frame.which == "CONFIRM_BINDER"
+            or (mode == "combat" and frame.which == "PARTY_INVITE")) then
             visibleFrames[#visibleFrames + 1] = name
         end
     end
@@ -494,7 +504,7 @@ local function ApplySelectiveUI(mode)
     if NeedsAuras() then
         for _, name in ipairs(auraFrames) do visibleFrames[#visibleFrames + 1] = name end
     end
-    if mode == "combat" then ApplyPartyInviteUI(visibleFrames) end
+    ApplyInteractionPopups(visibleFrames, mode)
     local windowMode = mode == "map" or mode == "questlog" or mode == "character"
         or mode == "tradeskill" or mode == "merchant" or mode == "mail"
     local modeFrames = (windowMode or mode == "target" or mode == "chat") and {}
@@ -697,24 +707,32 @@ local function HookChatEdits()
 end
 HookChatEdits()
 
--- The invite event can precede Blizzard showing or assigning a popup slot.
--- Refresh on the actual frame transition so a previously faded slot is usable
--- immediately, and closing it keeps the remaining combat policy in effect.
-local hookedPartyPopups = setmetatable({}, { __mode = "k" })
-local function HookPartyPopups()
+-- Blizzard assigns shared popup slots immediately before showing them. Refresh
+-- on that transition so relevant dialogs are restored before the next update.
+local hookedInteractionPopups = setmetatable({}, { __mode = "k" })
+local function HookInteractionPopups()
     for index = 1, STATICPOPUP_NUMDIALOGS or 4 do
         local frame = _G["StaticPopup" .. index]
-        if frame and not hookedPartyPopups[frame] then
-            hookedPartyPopups[frame] = true
+        if frame and not hookedInteractionPopups[frame] then
+            hookedInteractionPopups[frame] = true
             local function Refresh()
-                if enabled and InCombat() then ApplyCombatUI() end
+                if not enabled or not hidden then return end
+                if InCombat() then
+                    ApplyCombatUI()
+                elseif frame:IsShown() and frame.which == "CONFIRM_BINDER" then
+                    -- The gossip window may close before this confirmation is
+                    -- shown, so the popup itself owns the remaining interaction.
+                    ApplyQuestUI()
+                elseif hidden ~= "idle" then
+                    ApplySelectiveUI(hidden)
+                end
             end
             frame:HookScript("OnShow", Refresh)
             frame:HookScript("OnHide", Refresh)
         end
     end
 end
-HookPartyPopups()
+HookInteractionPopups()
 
 local function TradeSkillClosed()
     if not enabled or not hidden then return end
@@ -948,6 +966,7 @@ for _, event in ipairs({
     -- Movement and world mouse buttons (including mouse steering) do not reveal UI.
     "BAG_UPDATE_DELAYED", "LOOT_OPENED", "LOOT_CLOSED", "QUEST_DETAIL",
     "QUEST_COMPLETE", "QUEST_GREETING", "QUEST_PROGRESS", "GOSSIP_SHOW",
+    "CONFIRM_BINDER",
     "QUEST_WATCH_UPDATE",
     "MERCHANT_SHOW", "MERCHANT_CLOSED", "MAIL_SHOW", "MAIL_CLOSED", "PLAYER_EQUIPMENT_CHANGED",
     "TRADE_SKILL_SHOW", "TRADE_SKILL_CLOSE", "CRAFT_SHOW", "CRAFT_CLOSE",
@@ -969,7 +988,7 @@ controller:SetScript("OnEvent", function(_, event)
     HookSpellbook()
     HookLoot()
     HookTradeSkills()
-    HookPartyPopups()
+    HookInteractionPopups()
     HookChatEdits()
     HookMerchant()
     HookMail()
@@ -1049,7 +1068,7 @@ controller:SetScript("OnEvent", function(_, event)
     if enabled and hidden and not InCombat() and not lootOpen then
         if event == "QUEST_DETAIL" or event == "QUEST_COMPLETE"
             or event == "QUEST_GREETING" or event == "QUEST_PROGRESS"
-            or event == "GOSSIP_SHOW" then
+            or event == "GOSSIP_SHOW" or event == "CONFIRM_BINDER" then
             ApplyQuestUI()
             return
         end
@@ -1117,7 +1136,7 @@ controller:SetScript("OnUpdate", function(_, elapsed)
         ApplySpellbookUI()
         ApplyBagButtons()
         return
-    elseif hidden and IsQuestConversationOpen() then
+    elseif hidden and (IsQuestConversationOpen() or IsBinderConfirmationOpen()) then
         ApplyQuestUI()
         ApplyBagButtons()
         return

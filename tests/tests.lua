@@ -560,6 +560,35 @@ test("existing invite survives combat entry and manual overrides", function()
     end
 end)
 
+for index = 1, 4 do
+    test("innkeeper bind confirmation slot " .. index .. " remains visible", function()
+        local s, e = setup()
+        e.GossipFrame:Show(); s.event("GOSSIP_SHOW"); s.hidden()
+        local popup = e["StaticPopup" .. index]
+        popup.which = "CONFIRM_BINDER"
+        -- Classic can close gossip before assigning and showing the popup.
+        e.GossipFrame:Hide()
+        s.event("CONFIRM_BINDER")
+        popup:Show()
+        s.hidden()
+        assert(popup.alpha == 0.85 and e.PopupParent.alpha == 0.9,
+            "hearthstone bind confirmation or its ancestor is faded")
+        assert(e["StaticPopup" .. index .. "Button1"].alpha == 1,
+            "bind confirmation button is faded")
+        assert(e.PopupSibling.alpha == 0, "unrelated popup sibling revealed")
+        s.tick(); s.hidden()
+        assert(popup.alpha == 0.85, "bind confirmation did not retain quest policy")
+        popup:Hide(); s.tick(); s.hidden()
+    end)
+end
+
+test("innkeeper bind confirmation preserves already visible UI", function()
+    local s, e = setup(true)
+    e.StaticPopup1.which = "CONFIRM_BINDER"
+    e.StaticPopup1:Show(); s.tick(); s.visible()
+    assert(e.StaticPopup1.alpha == 0.85 and e.PopupSibling.alpha == 1)
+end)
+
 for _, visible in ipairs({ false, true }) do
     test("minimap controls survive combat, death, loot, and panels: visible=" .. tostring(visible), function()
         local s, e = setup(visible)
