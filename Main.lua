@@ -6,7 +6,7 @@ local originalAlpha = {}
 local unsupportedAlpha = setmetatable({}, { __mode = "k" })
 local ApplyCombatUI, ApplyBagUI, ApplyQuestUI, ApplySpellbookUI, ApplyMapUI
 local ApplyQuestLogUI, ApplyLootUI, ApplyTradeSkillUI, ApplyTargetUI, ApplyChatUI
-local ApplyCharacterUI
+local ApplyCharacterUI, ApplyInspectUI
 local lootOpen = false
 local merchantOpen = false
 local trainerOpen = false
@@ -59,6 +59,14 @@ local function IsSpellbookOpen()
 end
 local function IsCharacterOpen()
     return CharacterFrame and CharacterFrame:IsShown()
+end
+local inspectFrames = { "InspectFrame" }
+local function IsInspectOpen()
+    for _, name in ipairs(inspectFrames) do
+        local frame = _G[name]
+        if frame and frame:IsShown() then return true end
+    end
+    return false
 end
 local questFrames = { "QuestFrame", "GossipFrame" }
 local function IsQuestConversationOpen()
@@ -226,6 +234,10 @@ local function Activity()
         ApplyQuestLogUI()
         return
     end
+    if enabled and hidden and IsInspectOpen() then
+        ApplyInspectUI()
+        return
+    end
     if enabled and hidden and IsCharacterOpen() then
         ApplyCharacterUI()
         return
@@ -258,6 +270,7 @@ local function Activity()
         return
     end
     if enabled and (hidden == "combat" or hidden == "map" or hidden == "questlog" or hidden == "character"
+        or hidden == "inspect"
         or hidden == "loot" or hidden == "tradeskill" or hidden == "target" or hidden == "chat"
         or hidden == "merchant" or hidden == "trainer" or hidden == "mail" or hidden == "auction"
         or hidden == "taxi") then
@@ -535,7 +548,7 @@ local function ApplySelectiveUI(mode)
         for _, name in ipairs(auraFrames) do visibleFrames[#visibleFrames + 1] = name end
     end
     ApplyInteractionPopups(visibleFrames, mode)
-    local windowMode = mode == "map" or mode == "questlog" or mode == "character"
+    local windowMode = mode == "map" or mode == "questlog" or mode == "character" or mode == "inspect"
         or mode == "tradeskill" or mode == "merchant" or mode == "trainer" or mode == "mail"
         or mode == "auction" or mode == "taxi"
     local modeFrames = (windowMode or mode == "target" or mode == "chat") and {}
@@ -597,8 +610,12 @@ local function ApplySelectiveUI(mode)
     if mode ~= "loot" and IsCharacterOpen() then
         visibleFrames[#visibleFrames + 1] = "CharacterFrame"
     end
+    if mode ~= "loot" and IsInspectOpen() then
+        for _, name in ipairs(inspectFrames) do visibleFrames[#visibleFrames + 1] = name end
+    end
     if mode ~= "loot" and (windowMode or IsTradeSkillOpen()
-        or AreBagsOpen() or IsMapOpen() or IsQuestLogOpen() or IsCharacterOpen()) then
+        or AreBagsOpen() or IsMapOpen() or IsQuestLogOpen() or IsCharacterOpen()
+        or IsInspectOpen()) then
         for name in pairs(UIPanelWindows or {}) do
             local frame = _G[name]
             if frame and frame:IsShown() then
@@ -688,6 +705,7 @@ ApplySpellbookUI = function() ApplySelectiveUI("spellbook") end
 ApplyMapUI = function() ApplySelectiveUI("map") end
 ApplyQuestLogUI = function() ApplySelectiveUI("questlog") end
 ApplyCharacterUI = function() ApplySelectiveUI("character") end
+ApplyInspectUI = function() ApplySelectiveUI("inspect") end
 ApplyLootUI = function() ApplySelectiveUI("loot") end
 ApplyTradeSkillUI = function() ApplySelectiveUI("tradeskill") end
 ApplyTargetUI = function() ApplySelectiveUI("target") end
@@ -930,6 +948,28 @@ local function HookCharacter()
 end
 HookCharacter()
 
+-- Blizzard_InspectUI is load-on-demand. Hook the root window once it exists so
+-- its paper-doll controls and gear slots use a dedicated selective policy.
+local hookedInspectFrames = setmetatable({}, { __mode = "k" })
+local function HookInspect()
+    for _, name in ipairs(inspectFrames) do
+        local frame = _G[name]
+        if frame and not hookedInspectFrames[frame] then
+            hookedInspectFrames[frame] = true
+            frame:HookScript("OnShow", function()
+                if enabled and hidden then
+                    if InCombat() then ApplyCombatUI()
+                    elseif lootOpen then ApplyLootUI() else ApplyInspectUI() end
+                end
+            end)
+            frame:HookScript("OnHide", function()
+                if enabled and hidden == "inspect" then Activity() end
+            end)
+        end
+    end
+end
+HookInspect()
+
 local hookedMap
 local function HookMap()
     if not WorldMapFrame or hookedMap == WorldMapFrame then return end
@@ -978,6 +1018,9 @@ local function IsInteracting()
     end
     -- TaxiFrame is not registered as a normal UIPanel window.
     if taxiOpen then return true end
+    -- InspectFrame is load-on-demand and is not a UIPanelWindow in every
+    -- Classic client variant.
+    if IsInspectOpen() then return true end
     if AreBagsOpen() then return true end
     for index = 1, 4 do
         if IsShown("StaticPopup" .. index) then return true end
@@ -1049,6 +1092,7 @@ local function KeyboardActivity(_, key)
     -- both key edges: the window, target, or cast may be gone on key release.
     if hidden and action == "TOGGLEGAMEMENU"
         and (mailOpen or lootOpen or IsMapOpen() or IsQuestLogOpen() or IsCharacterOpen()
+            or IsInspectOpen()
             or IsTradeSkillOpen() or trainerOpen or auctionOpen
             or hidden == "tradeskill" or hidden == "trainer" or hidden == "auction"
             or hidden == "character" or UnitExists("target")
@@ -1118,6 +1162,7 @@ controller:SetScript("OnEvent", function(_, event)
     HookMap()
     HookQuestLog()
     HookCharacter()
+    HookInspect()
     HookSpellbook()
     HookLoot()
     HookTradeSkills()
@@ -1303,6 +1348,10 @@ controller:SetScript("OnUpdate", function(_, elapsed)
         ApplyQuestLogUI()
         ApplyBagButtons()
         return
+    elseif hidden and IsInspectOpen() then
+        ApplyInspectUI()
+        ApplyBagButtons()
+        return
     elseif hidden and IsCharacterOpen() then
         ApplyCharacterUI()
         ApplyBagButtons()
@@ -1333,7 +1382,8 @@ controller:SetScript("OnUpdate", function(_, elapsed)
         ApplyBagButtons()
         return
     elseif hidden == "bags" or hidden == "spellbook" or hidden == "map"
-        or hidden == "questlog" or hidden == "character" or hidden == "loot" or hidden == "tradeskill"
+        or hidden == "questlog" or hidden == "character" or hidden == "inspect"
+        or hidden == "loot" or hidden == "tradeskill"
         or hidden == "target" or hidden == "chat" or hidden == "merchant" or hidden == "trainer"
         or hidden == "mail" or hidden == "auction" or hidden == "taxi" then
         RestoreUI()

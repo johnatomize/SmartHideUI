@@ -83,11 +83,14 @@ local function setup(visible)
     end
     for _, name in ipairs({ "LootFrame", "ContainerFrame1", "TradeSkillFrame",
         "CraftFrame", "QuestFrame", "GossipFrame", "SpellBookFrame", "WorldMapFrame",
-        "QuestLogFrame", "CharacterFrame", "MerchantFrame", "ClassTrainerFrame",
+        "QuestLogFrame", "CharacterFrame", "InspectFrame", "MerchantFrame", "ClassTrainerFrame",
         "MailFrame", "OpenMailFrame", "AuctionHouseFrame", "AuctionFrame", "TaxiFrame",
         "FlightMapFrame" }) do
         frame(name, env.UIParent, false)
     end
+    frame("InspectPaperDollFrame", env.InspectFrame, true, 0.8)
+    frame("InspectHeadSlot", env.InspectPaperDollFrame, true, 0.9)
+    frame("InspectModelFrame", env.InspectFrame, true, 0.7)
     frame("StackSplitFrame", env.UIParent, false, 0.85)
     frame("GameTooltip", env.UIParent, false, 1, "GameTooltip")
     env.UIPanelWindows = { TradeSkillFrame = {}, CraftFrame = {}, QuestFrame = {},
@@ -236,6 +239,31 @@ test("character window preserves visible entry and manual overrides", function()
         e.SlashCmdList.SMARTHIDEUI(command)
         s.key("OnKeyDown", "TOGGLECHARACTER0")
         e.CharacterFrame:Show(); s.tick(4); s.visible()
+    end
+end)
+
+test("inspect reveals the complete inspect window without the HUD", function()
+    local s, e = setup()
+    s.target, s.playerTarget, s.friendly = true, true, true
+    s.event("PLAYER_TARGET_CHANGED")
+    e.InspectFrame:Show(); s.tick()
+    s.hidden()
+    assert(e.InspectFrame.alpha == 1, "inspect window is faded")
+    assert(e.InspectPaperDollFrame.alpha == 0.8 and e.InspectHeadSlot.alpha == 0.9,
+        "inspect gear controls are faded")
+    assert(e.InspectModelFrame.alpha == 0.7, "inspect model is faded")
+    assert(e.TargetFrame.alpha == 0.9, "inspected player's target frame is faded")
+    e.InspectFrame:Hide(); s.tick(); s.hidden()
+    assert(e.InspectFrame.alpha == 0, "closed inspect window retained its policy")
+    assert(e.TargetFrame.alpha == 0.9, "closing inspect lost the target policy")
+end)
+
+test("inspect preserves already visible UI and manual overrides", function()
+    local s, e = setup(true)
+    e.InspectFrame:Show(); s.tick(4); s.visible()
+    for _, command in ipairs({ "show", "off" }) do
+        e.SlashCmdList.SMARTHIDEUI(command)
+        e.InspectFrame:Show(); s.tick(4); s.visible()
     end
 end)
 
