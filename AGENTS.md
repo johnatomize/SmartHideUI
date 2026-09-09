@@ -65,3 +65,15 @@ interaction, closing, overlapping modes, and disabling the addon. Check for
 unrelated UI flashing into view and for required controls remaining invisible.
 Use available automated checks where useful, and clearly state when in-game
 verification is still needed.
+
+### Lua test runtime
+
+Lua 5.1 is installed at
+`C:\Users\johnh\AppData\Local\Programs\Lua\5.1\lua.exe`. The directory may be
+present on `PATH`, but the Codex filesystem sandbox can prevent discovery or
+execution because it is outside the workspace. Whenever the regression suite
+needs to run, request escalated access for that exact executable, preferably
+with the reusable prefix rule
+`["C:\\Users\\johnh\\AppData\\Local\\Programs\\Lua\\5.1\\lua.exe"]`, then run:
+
+`& 'C:\Users\johnh\AppData\Local\Programs\Lua\5.1\lua.exe' tests\tests.lua`
