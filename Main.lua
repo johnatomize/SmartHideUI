@@ -252,7 +252,7 @@ local function Activity()
     end
     if enabled and (hidden == "combat" or hidden == "map" or hidden == "questlog" or hidden == "character"
         or hidden == "loot" or hidden == "tradeskill" or hidden == "target" or hidden == "chat"
-        or hidden == "merchant" or hidden == "mail" or hidden == "auction") then
+        or hidden == "merchant" or hidden == "trainer" or hidden == "mail" or hidden == "auction") then
         HideUI()
         return
     end
