@@ -84,7 +84,8 @@ local function setup(visible)
     for _, name in ipairs({ "LootFrame", "ContainerFrame1", "TradeSkillFrame",
         "CraftFrame", "QuestFrame", "GossipFrame", "SpellBookFrame", "WorldMapFrame",
         "QuestLogFrame", "CharacterFrame", "MerchantFrame", "ClassTrainerFrame",
-        "MailFrame", "OpenMailFrame", "AuctionHouseFrame", "AuctionFrame" }) do
+        "MailFrame", "OpenMailFrame", "AuctionHouseFrame", "AuctionFrame", "TaxiFrame",
+        "FlightMapFrame" }) do
         frame(name, env.UIParent, false)
     end
     frame("StackSplitFrame", env.UIParent, false, 0.85)
@@ -838,6 +839,43 @@ test("trainer preserves visible entry and manual overrides", function()
         e.SlashCmdList.SMARTHIDEUI(command)
         e.ClassTrainerFrame:Hide(); s.event("TRAINER_CLOSED")
         s.event("TRAINER_SHOW"); e.ClassTrainerFrame:Show(); s.tick(4); s.visible()
+    end
+end)
+
+for _, eventFirst in ipairs({ false, true }) do
+    test("flight map entry, bags and close ordering eventFirst=" .. tostring(eventFirst), function()
+        local s, e = setup()
+        e.GossipFrame:Show(); s.event("GOSSIP_SHOW"); s.hidden()
+        e.GossipFrame:Hide()
+        if eventFirst then s.event("TAXIMAP_OPENED"); s.hidden() end
+        e.TaxiFrame:Show(); s.hidden()
+        s.event("TAXIMAP_OPENED"); s.hidden()
+        assert(e.TaxiFrame.alpha == 1, "flight map is faded")
+        assert(e.MainMenuBar.alpha == 0 or e.ActionButton1.alpha == 0,
+            "flight map revealed action controls")
+
+        s.key("OnKeyDown", "UNBOUND"); s.tick(4); s.hidden()
+        assert(e.TaxiFrame.alpha == 1, "flight map did not retain its policy")
+        e.ContainerFrame1:Show(); s.event("BAG_UPDATE_DELAYED"); s.hidden()
+        assert(e.TaxiFrame.alpha == 1 and e.ContainerFrame1.alpha == 1)
+        assert(e.ActionButton1.alpha == 0.8, "open bags lack their action controls")
+        e.ContainerFrame1:Hide(); s.tick(); s.hidden()
+
+        if eventFirst then s.event("TAXIMAP_CLOSED"); s.hidden() end
+        e.TaxiFrame:Hide(); s.event("TAXIMAP_CLOSED"); s.tick(); s.hidden()
+        assert(e.MainMenuBar.alpha == 0 or e.ActionButton1.alpha == 0)
+        e.SlashCmdList.SMARTHIDEUI("off"); s.visible()
+        assert(e.TaxiFrame.alpha == 1)
+    end)
+end
+
+test("flight map preserves visible entry and manual overrides", function()
+    local s, e = setup(true)
+    s.event("TAXIMAP_OPENED"); e.TaxiFrame:Show(); s.tick(4); s.visible()
+    for _, command in ipairs({ "show", "off" }) do
+        e.SlashCmdList.SMARTHIDEUI(command)
+        e.TaxiFrame:Hide(); s.event("TAXIMAP_CLOSED")
+        s.event("TAXIMAP_OPENED"); e.TaxiFrame:Show(); s.tick(4); s.visible()
     end
 end)
 

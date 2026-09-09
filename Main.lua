@@ -19,6 +19,9 @@ local trainerFrames = { "ClassTrainerFrame" }
 local ApplyAuctionUI
 local auctionOpen = false
 local auctionFrames = { "AuctionHouseFrame", "AuctionFrame" }
+local ApplyTaxiUI
+local taxiOpen = false
+local taxiFrames = { "TaxiFrame", "FlightMapFrame" }
 local questTrackerVisibleUntil = 0
 local function NeedsQuestTrackerUI()
     return GetTime() < questTrackerVisibleUntil
@@ -206,6 +209,10 @@ local function Activity()
         ApplyAuctionUI()
         return
     end
+    if enabled and hidden and taxiOpen then
+        ApplyTaxiUI()
+        return
+    end
     if enabled and hidden and (IsTradeSkillOpen()
         or (hidden == "tradeskill" and HasOpenPanel())) then
         ApplyTradeSkillUI()
@@ -252,7 +259,8 @@ local function Activity()
     end
     if enabled and (hidden == "combat" or hidden == "map" or hidden == "questlog" or hidden == "character"
         or hidden == "loot" or hidden == "tradeskill" or hidden == "target" or hidden == "chat"
-        or hidden == "merchant" or hidden == "trainer" or hidden == "mail" or hidden == "auction") then
+        or hidden == "merchant" or hidden == "trainer" or hidden == "mail" or hidden == "auction"
+        or hidden == "taxi") then
         HideUI()
         return
     end
@@ -529,7 +537,7 @@ local function ApplySelectiveUI(mode)
     ApplyInteractionPopups(visibleFrames, mode)
     local windowMode = mode == "map" or mode == "questlog" or mode == "character"
         or mode == "tradeskill" or mode == "merchant" or mode == "trainer" or mode == "mail"
-        or mode == "auction"
+        or mode == "auction" or mode == "taxi"
     local modeFrames = (windowMode or mode == "target" or mode == "chat") and {}
         or mode == "loot" and { "LootFrame" }
         or mode == "quest" and questFrames
@@ -555,6 +563,10 @@ local function ApplySelectiveUI(mode)
     -- current and legacy Classic frame names without exposing the rest of the HUD.
     if auctionOpen then
         for _, name in ipairs(auctionFrames) do visibleFrames[#visibleFrames + 1] = name end
+    end
+    -- The flight-point map is not the world map or a normal UIPanel window.
+    if taxiOpen then
+        for _, name in ipairs(taxiFrames) do visibleFrames[#visibleFrames + 1] = name end
     end
     -- Every living target needs its portrait; enemies also need combat controls.
     if mode ~= "combat" and HasPortraitTarget() then
@@ -680,6 +692,7 @@ ApplyMailUI = function() ApplySelectiveUI("mail") end
 ApplyMerchantUI = function() ApplySelectiveUI("merchant") end
 ApplyTrainerUI = function() ApplySelectiveUI("trainer") end
 ApplyAuctionUI = function() ApplySelectiveUI("auction") end
+ApplyTaxiUI = function() ApplySelectiveUI("taxi") end
 
 -- Track the event before Blizzard shows the window or opens bags. Both close
 -- notifications may arrive; neither should become generic full-UI activity.
@@ -747,6 +760,29 @@ local function HookAuction()
     end
 end
 HookAuction()
+
+local function TaxiClosed()
+    if not taxiOpen then return end
+    taxiOpen = false
+    if enabled and hidden then
+        if hidden == "idle" then HideUI() else Activity() end
+    end
+end
+local hookedTaxiFrames = setmetatable({}, { __mode = "k" })
+local function HookTaxi()
+    for _, name in ipairs(taxiFrames) do
+        local frame = _G[name]
+        if frame and not hookedTaxiFrames[frame] then
+            hookedTaxiFrames[frame] = true
+            frame:HookScript("OnShow", function()
+                taxiOpen = true
+                if enabled and hidden then Activity() end
+            end)
+            frame:HookScript("OnHide", TaxiClosed)
+        end
+    end
+end
+HookTaxi()
 
 -- MAIL_SHOW can precede both the mailbox frame and automatically opened bags.
 local function MailClosed()
@@ -936,6 +972,8 @@ local function IsInteracting()
         "ChatConfigFrame" }) do
         if IsShown(name) then return true end
     end
+    -- TaxiFrame is not registered as a normal UIPanel window.
+    if taxiOpen then return true end
     if AreBagsOpen() then return true end
     for index = 1, 4 do
         if IsShown("StaticPopup" .. index) then return true end
@@ -1059,6 +1097,7 @@ for _, event in ipairs({
     "MERCHANT_SHOW", "MERCHANT_CLOSED", "MAIL_SHOW", "MAIL_CLOSED", "PLAYER_EQUIPMENT_CHANGED",
     "TRAINER_SHOW", "TRAINER_CLOSED",
     "AUCTION_HOUSE_SHOW", "AUCTION_HOUSE_CLOSED",
+    "TAXIMAP_OPENED", "TAXIMAP_CLOSED",
     "TRADE_SKILL_SHOW", "TRADE_SKILL_CLOSE", "CRAFT_SHOW", "CRAFT_CLOSE",
     "PLAYER_DEAD", "PLAYER_ALIVE", "PLAYER_UNGHOST",
     "CHAT_MSG_WHISPER", "CHAT_MSG_BN_WHISPER", "CHAT_MSG_SAY",
@@ -1083,7 +1122,16 @@ controller:SetScript("OnEvent", function(_, event)
     HookMerchant()
     HookTrainer()
     HookAuction()
+    HookTaxi()
     HookMail()
+    if event == "TAXIMAP_OPENED" then
+        taxiOpen = true
+        if enabled and hidden then Activity() end
+        return
+    elseif event == "TAXIMAP_CLOSED" then
+        TaxiClosed()
+        return
+    end
     if event == "MAIL_SHOW" then
         mailOpen = true
         if enabled and hidden then Activity() end
@@ -1131,6 +1179,7 @@ controller:SetScript("OnEvent", function(_, event)
         merchantOpen = false
         trainerOpen = false
         auctionOpen = false
+        taxiOpen = false
         mailOpen = false
     end
     if event == "CHAT_MSG_WHISPER" or event == "CHAT_MSG_BN_WHISPER"
@@ -1233,6 +1282,10 @@ controller:SetScript("OnUpdate", function(_, elapsed)
         ApplyAuctionUI()
         ApplyBagButtons()
         return
+    elseif hidden and taxiOpen then
+        ApplyTaxiUI()
+        ApplyBagButtons()
+        return
     elseif hidden and (IsTradeSkillOpen()
         or (hidden == "tradeskill" and HasOpenPanel())) then
         ApplyTradeSkillUI()
@@ -1278,7 +1331,7 @@ controller:SetScript("OnUpdate", function(_, elapsed)
     elseif hidden == "bags" or hidden == "spellbook" or hidden == "map"
         or hidden == "questlog" or hidden == "character" or hidden == "loot" or hidden == "tradeskill"
         or hidden == "target" or hidden == "chat" or hidden == "merchant" or hidden == "trainer"
-        or hidden == "mail" or hidden == "auction" then
+        or hidden == "mail" or hidden == "auction" or hidden == "taxi" then
         RestoreUI()
         HideUI()
         ApplyBagButtons()
