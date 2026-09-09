@@ -22,6 +22,7 @@ local auctionFrames = { "AuctionHouseFrame", "AuctionFrame" }
 local ApplyTaxiUI
 local taxiOpen = false
 local taxiFrames = { "TaxiFrame", "FlightMapFrame" }
+local questTrackerRevealDuration = 10
 local questTrackerVisibleUntil = 0
 local function NeedsQuestTrackerUI()
     return GetTime() < questTrackerVisibleUntil
@@ -1217,7 +1218,7 @@ controller:SetScript("OnEvent", function(_, event)
     -- than general log refreshes. Do not count it as full-UI activity.
     if event == "QUEST_WATCH_UPDATE" then
         if enabled then
-            questTrackerVisibleUntil = GetTime() + 3
+            questTrackerVisibleUntil = GetTime() + questTrackerRevealDuration
             if hidden == "idle" then HideUI()
             elseif hidden then ApplySelectiveUI(hidden) end
         end
