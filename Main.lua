@@ -16,6 +16,9 @@ local mailFrames = { "MailFrame", "OpenMailFrame" }
 local ApplyMerchantUI
 local ApplyTrainerUI
 local trainerFrames = { "ClassTrainerFrame" }
+local ApplyAuctionUI
+local auctionOpen = false
+local auctionFrames = { "AuctionHouseFrame", "AuctionFrame" }
 local questTrackerVisibleUntil = 0
 local function NeedsQuestTrackerUI()
     return GetTime() < questTrackerVisibleUntil
@@ -199,6 +202,10 @@ local function Activity()
         ApplyTrainerUI()
         return
     end
+    if enabled and hidden and auctionOpen then
+        ApplyAuctionUI()
+        return
+    end
     if enabled and hidden and (IsTradeSkillOpen()
         or (hidden == "tradeskill" and HasOpenPanel())) then
         ApplyTradeSkillUI()
@@ -245,7 +252,7 @@ local function Activity()
     end
     if enabled and (hidden == "combat" or hidden == "map" or hidden == "questlog" or hidden == "character"
         or hidden == "loot" or hidden == "tradeskill" or hidden == "target" or hidden == "chat"
-        or hidden == "merchant" or hidden == "mail") then
+        or hidden == "merchant" or hidden == "mail" or hidden == "auction") then
         HideUI()
         return
     end
@@ -370,6 +377,10 @@ HideUI = function()
     end
     if trainerOpen then
         ApplyTrainerUI()
+        return
+    end
+    if auctionOpen then
+        ApplyAuctionUI()
         return
     end
     if IsTradeSkillOpen() then
@@ -518,6 +529,7 @@ local function ApplySelectiveUI(mode)
     ApplyInteractionPopups(visibleFrames, mode)
     local windowMode = mode == "map" or mode == "questlog" or mode == "character"
         or mode == "tradeskill" or mode == "merchant" or mode == "trainer" or mode == "mail"
+        or mode == "auction"
     local modeFrames = (windowMode or mode == "target" or mode == "chat") and {}
         or mode == "loot" and { "LootFrame" }
         or mode == "quest" and questFrames
@@ -538,6 +550,11 @@ local function ApplySelectiveUI(mode)
     -- event. Preserve its named frame as soon as it becomes available.
     if trainerOpen then
         for _, name in ipairs(trainerFrames) do visibleFrames[#visibleFrames + 1] = name end
+    end
+    -- Auction events can precede load-on-demand frame creation. Keep both the
+    -- current and legacy Classic frame names without exposing the rest of the HUD.
+    if auctionOpen then
+        for _, name in ipairs(auctionFrames) do visibleFrames[#visibleFrames + 1] = name end
     end
     -- Every living target needs its portrait; enemies also need combat controls.
     if mode ~= "combat" and HasPortraitTarget() then
@@ -662,6 +679,7 @@ ApplyChatUI = function() ApplySelectiveUI("chat") end
 ApplyMailUI = function() ApplySelectiveUI("mail") end
 ApplyMerchantUI = function() ApplySelectiveUI("merchant") end
 ApplyTrainerUI = function() ApplySelectiveUI("trainer") end
+ApplyAuctionUI = function() ApplySelectiveUI("auction") end
 
 -- Track the event before Blizzard shows the window or opens bags. Both close
 -- notifications may arrive; neither should become generic full-UI activity.
@@ -706,6 +724,29 @@ local function HookTrainer()
     end
 end
 HookTrainer()
+
+local function AuctionClosed()
+    if not auctionOpen then return end
+    auctionOpen = false
+    if enabled and hidden then
+        if hidden == "idle" then HideUI() else Activity() end
+    end
+end
+local hookedAuctions = setmetatable({}, { __mode = "k" })
+local function HookAuction()
+    for _, name in ipairs(auctionFrames) do
+        local frame = _G[name]
+        if frame and not hookedAuctions[frame] then
+            hookedAuctions[frame] = true
+            frame:HookScript("OnShow", function()
+                auctionOpen = true
+                if enabled and hidden then Activity() end
+            end)
+            frame:HookScript("OnHide", AuctionClosed)
+        end
+    end
+end
+HookAuction()
 
 -- MAIL_SHOW can precede both the mailbox frame and automatically opened bags.
 local function MailClosed()
@@ -966,7 +1007,8 @@ local function KeyboardActivity(_, key)
     -- both key edges: the window, target, or cast may be gone on key release.
     if hidden and action == "TOGGLEGAMEMENU"
         and (mailOpen or lootOpen or IsMapOpen() or IsQuestLogOpen() or IsCharacterOpen()
-            or IsTradeSkillOpen() or trainerOpen or hidden == "tradeskill" or hidden == "trainer"
+            or IsTradeSkillOpen() or trainerOpen or auctionOpen
+            or hidden == "tradeskill" or hidden == "trainer" or hidden == "auction"
             or hidden == "character" or UnitExists("target")
             or UnitCastingInfo("player") or UnitChannelInfo("player")) then
         targetClearingKeysDown[key] = true
@@ -1016,6 +1058,7 @@ for _, event in ipairs({
     "QUEST_WATCH_UPDATE",
     "MERCHANT_SHOW", "MERCHANT_CLOSED", "MAIL_SHOW", "MAIL_CLOSED", "PLAYER_EQUIPMENT_CHANGED",
     "TRAINER_SHOW", "TRAINER_CLOSED",
+    "AUCTION_HOUSE_SHOW", "AUCTION_HOUSE_CLOSED",
     "TRADE_SKILL_SHOW", "TRADE_SKILL_CLOSE", "CRAFT_SHOW", "CRAFT_CLOSE",
     "PLAYER_DEAD", "PLAYER_ALIVE", "PLAYER_UNGHOST",
     "CHAT_MSG_WHISPER", "CHAT_MSG_BN_WHISPER", "CHAT_MSG_SAY",
@@ -1039,6 +1082,7 @@ controller:SetScript("OnEvent", function(_, event)
     HookChatEdits()
     HookMerchant()
     HookTrainer()
+    HookAuction()
     HookMail()
     if event == "MAIL_SHOW" then
         mailOpen = true
@@ -1064,6 +1108,14 @@ controller:SetScript("OnEvent", function(_, event)
         TrainerClosed()
         return
     end
+    if event == "AUCTION_HOUSE_SHOW" then
+        auctionOpen = true
+        if enabled and hidden then Activity() end
+        return
+    elseif event == "AUCTION_HOUSE_CLOSED" then
+        AuctionClosed()
+        return
+    end
     -- Unlike QUEST_LOG_UPDATE, this event reports objective progress rather
     -- than general log refreshes. Do not count it as full-UI activity.
     if event == "QUEST_WATCH_UPDATE" then
@@ -1078,6 +1130,7 @@ controller:SetScript("OnEvent", function(_, event)
         questTrackerVisibleUntil = 0
         merchantOpen = false
         trainerOpen = false
+        auctionOpen = false
         mailOpen = false
     end
     if event == "CHAT_MSG_WHISPER" or event == "CHAT_MSG_BN_WHISPER"
@@ -1176,6 +1229,10 @@ controller:SetScript("OnUpdate", function(_, elapsed)
         ApplyTrainerUI()
         ApplyBagButtons()
         return
+    elseif hidden and auctionOpen then
+        ApplyAuctionUI()
+        ApplyBagButtons()
+        return
     elseif hidden and (IsTradeSkillOpen()
         or (hidden == "tradeskill" and HasOpenPanel())) then
         ApplyTradeSkillUI()
@@ -1221,7 +1278,7 @@ controller:SetScript("OnUpdate", function(_, elapsed)
     elseif hidden == "bags" or hidden == "spellbook" or hidden == "map"
         or hidden == "questlog" or hidden == "character" or hidden == "loot" or hidden == "tradeskill"
         or hidden == "target" or hidden == "chat" or hidden == "merchant" or hidden == "trainer"
-        or hidden == "mail" then
+        or hidden == "mail" or hidden == "auction" then
         RestoreUI()
         HideUI()
         ApplyBagButtons()

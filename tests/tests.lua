@@ -84,12 +84,15 @@ local function setup(visible)
     for _, name in ipairs({ "LootFrame", "ContainerFrame1", "TradeSkillFrame",
         "CraftFrame", "QuestFrame", "GossipFrame", "SpellBookFrame", "WorldMapFrame",
         "QuestLogFrame", "CharacterFrame", "MerchantFrame", "ClassTrainerFrame",
-        "MailFrame", "OpenMailFrame" }) do frame(name, env.UIParent, false) end
+        "MailFrame", "OpenMailFrame", "AuctionHouseFrame", "AuctionFrame" }) do
+        frame(name, env.UIParent, false)
+    end
     frame("StackSplitFrame", env.UIParent, false, 0.85)
     frame("GameTooltip", env.UIParent, false, 1, "GameTooltip")
     env.UIPanelWindows = { TradeSkillFrame = {}, CraftFrame = {}, QuestFrame = {},
         GossipFrame = {}, SpellBookFrame = {}, WorldMapFrame = {}, QuestLogFrame = {},
-        CharacterFrame = {}, MerchantFrame = {}, ClassTrainerFrame = {}, MailFrame = {} }
+        CharacterFrame = {}, MerchantFrame = {}, ClassTrainerFrame = {}, MailFrame = {},
+        AuctionHouseFrame = {}, AuctionFrame = {} }
     env.SlashCmdList = {}
     env.CreateFrame = function(_, name) return frame(name, env.UIParent) end
     env.GetTime = function() return s.time end
@@ -838,6 +841,46 @@ test("trainer preserves visible entry and manual overrides", function()
     end
 end)
 
+for _, frameName in ipairs({ "AuctionHouseFrame", "AuctionFrame" }) do
+    for _, eventFirst in ipairs({ false, true }) do
+        test("auction entry and close " .. frameName .. " eventFirst=" .. tostring(eventFirst), function()
+            local s, e = setup()
+            s.key("OnKeyDown", "INTERACTTARGET"); s.hidden()
+            if eventFirst then s.event("AUCTION_HOUSE_SHOW"); s.hidden() end
+            e[frameName]:Show(); s.hidden()
+            s.event("AUCTION_HOUSE_SHOW"); s.hidden()
+            assert(e[frameName].alpha == 1, "auction window is faded")
+            assert(e.MainMenuBar.alpha == 0 or e.ActionButton1.alpha == 0,
+                "auction interaction revealed action controls")
+            s.key("OnKeyUp", "INTERACTTARGET"); s.tick(4); s.hidden()
+            assert(e[frameName].alpha == 1, "auction window did not retain its policy")
+            e.ContainerFrame1:Show(); s.event("BAG_UPDATE_DELAYED"); s.hidden()
+            assert(e[frameName].alpha == 1 and e.ContainerFrame1.alpha == 1)
+            assert(e.ActionButton1.alpha == 0.8, "open bags lack their action controls")
+            e.ContainerFrame1:Hide(); s.tick(); s.hidden()
+            s.combat = true; s.event("PLAYER_REGEN_DISABLED"); s.hidden()
+            assert(e[frameName].alpha == 1 and e.ActionButton1.alpha == 0.8)
+            s.combat = false; s.event("PLAYER_REGEN_ENABLED"); s.hidden()
+            s.key("OnKeyDown", "TOGGLEGAMEMENU")
+            if eventFirst then s.event("AUCTION_HOUSE_CLOSED"); s.hidden() end
+            e[frameName]:Hide(); s.event("AUCTION_HOUSE_CLOSED"); s.tick(); s.hidden()
+            s.key("OnKeyUp", "TOGGLEGAMEMENU"); s.hidden()
+            e.SlashCmdList.SMARTHIDEUI("off"); s.visible()
+            assert(e[frameName].alpha == 1)
+        end)
+    end
+end
+
+test("auction preserves visible entry and manual overrides", function()
+    local s, e = setup(true)
+    s.event("AUCTION_HOUSE_SHOW"); e.AuctionHouseFrame:Show(); s.tick(4); s.visible()
+    for _, command in ipairs({ "show", "off" }) do
+        e.SlashCmdList.SMARTHIDEUI(command)
+        e.AuctionHouseFrame:Hide(); s.event("AUCTION_HOUSE_CLOSED")
+        s.event("AUCTION_HOUSE_SHOW"); e.AuctionHouseFrame:Show(); s.tick(4); s.visible()
+    end
+end)
+
 for _, visible in ipairs({ false, true }) do
     test("vendor quantity picker with visible entry " .. tostring(visible), function()
         local s, e = setup(visible)
@@ -860,7 +903,7 @@ end
 
 for _, panel in ipairs({ "ContainerFrame1", "QuestLogFrame", "SpellBookFrame",
     "WorldMapFrame", "TradeSkillFrame", "ClassTrainerFrame", "QuestFrame", "LootFrame",
-    "CharacterFrame" }) do
+    "CharacterFrame", "AuctionHouseFrame" }) do
     for _, visible in ipairs({ false, true }) do
         test("area text animation with " .. panel .. " visible=" .. tostring(visible), function()
             local s, e = setup(visible)
