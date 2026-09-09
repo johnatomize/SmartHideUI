@@ -568,16 +568,17 @@ local function ApplySelectiveUI(mode)
     if taxiOpen then
         for _, name in ipairs(taxiFrames) do visibleFrames[#visibleFrames + 1] = name end
     end
-    -- Every living target needs its portrait; enemies also need combat controls.
+    -- Every living target needs its portrait and action controls so friendly
+    -- players and NPCs can be acted on just like hostile targets.
     if mode ~= "combat" and HasPortraitTarget() then
         visibleFrames[#visibleFrames + 1] = "TargetFrame"
+        for _, name in ipairs(actionFrames) do visibleFrames[#visibleFrames + 1] = name end
     end
     -- Target controls compose with open interactions; combat owns its own HUD.
     -- Player auras are needed before engaging an enemy so the player can check
     -- their current buff and debuff status before choosing an action.
     if mode ~= "combat" and HasEnemyTarget() then
         visibleFrames[#visibleFrames + 1] = "PlayerFrame"
-        for _, name in ipairs(actionFrames) do visibleFrames[#visibleFrames + 1] = name end
         for _, name in ipairs(auraFrames) do visibleFrames[#visibleFrames + 1] = name end
     end
     -- Window interactions preserve open panels without revealing the HUD.
