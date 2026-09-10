@@ -92,7 +92,7 @@ local function setup(visible)
         "CraftFrame", "QuestFrame", "GossipFrame", "SpellBookFrame", "WorldMapFrame",
         "QuestLogFrame", "CharacterFrame", "InspectFrame", "MerchantFrame", "ClassTrainerFrame",
         "MailFrame", "OpenMailFrame", "AuctionHouseFrame", "AuctionFrame", "TaxiFrame",
-        "FlightMapFrame" }) do
+        "FlightMapFrame", "PetitionFrame" }) do
         frame(name, env.UIParent, false)
     end
     frame("InspectPaperDollFrame", env.InspectFrame, true, 0.8)
@@ -103,7 +103,7 @@ local function setup(visible)
     env.UIPanelWindows = { TradeSkillFrame = {}, CraftFrame = {}, QuestFrame = {},
         GossipFrame = {}, SpellBookFrame = {}, WorldMapFrame = {}, QuestLogFrame = {},
         CharacterFrame = {}, MerchantFrame = {}, ClassTrainerFrame = {}, MailFrame = {},
-        AuctionHouseFrame = {}, AuctionFrame = {} }
+        AuctionHouseFrame = {}, AuctionFrame = {}, PetitionFrame = {} }
     env.SlashCmdList = {}
     env.CreateFrame = function(_, name) return frame(name, env.UIParent) end
     env.GetTime = function() return s.time end
@@ -916,6 +916,41 @@ test("flight map preserves visible entry and manual overrides", function()
         e.SlashCmdList.SMARTHIDEUI(command)
         e.TaxiFrame:Hide(); s.event("TAXIMAP_CLOSED")
         s.event("TAXIMAP_OPENED"); e.TaxiFrame:Show(); s.tick(4); s.visible()
+    end
+end)
+
+for _, eventFirst in ipairs({ false, true }) do
+    test("guild charter entry and close ordering eventFirst=" .. tostring(eventFirst), function()
+        local s, e = setup()
+        s.key("OnKeyDown", "INTERACTTARGET"); s.hidden()
+        if eventFirst then s.event("PETITION_SHOW"); s.hidden() end
+        e.PetitionFrame:Show(); s.hidden()
+        s.event("PETITION_SHOW"); s.hidden()
+        assert(e.PetitionFrame.alpha == 1, "guild charter signing window is faded")
+        assert(e.MainMenuBar.alpha == 0 or e.ActionButton1.alpha == 0,
+            "guild charter request revealed action controls")
+
+        s.key("OnKeyUp", "INTERACTTARGET"); s.tick(4); s.hidden()
+        assert(e.PetitionFrame.alpha == 1, "guild charter did not retain its policy")
+        s.combat = true; s.event("PLAYER_REGEN_DISABLED"); s.hidden()
+        assert(e.PetitionFrame.alpha == 1 and e.ActionButton1.alpha == 0.8,
+            "guild charter did not compose with combat")
+        s.combat = false; s.event("PLAYER_REGEN_ENABLED"); s.hidden()
+
+        if eventFirst then s.event("PETITION_CLOSED"); s.hidden() end
+        e.PetitionFrame:Hide(); s.event("PETITION_CLOSED"); s.tick(); s.hidden()
+        e.SlashCmdList.SMARTHIDEUI("off"); s.visible()
+        assert(e.PetitionFrame.alpha == 1)
+    end)
+end
+
+test("guild charter preserves visible entry and manual overrides", function()
+    local s, e = setup(true)
+    s.event("PETITION_SHOW"); e.PetitionFrame:Show(); s.tick(4); s.visible()
+    for _, command in ipairs({ "show", "off" }) do
+        e.SlashCmdList.SMARTHIDEUI(command)
+        e.PetitionFrame:Hide(); s.event("PETITION_CLOSED")
+        s.event("PETITION_SHOW"); e.PetitionFrame:Show(); s.tick(4); s.visible()
     end
 end)
 
