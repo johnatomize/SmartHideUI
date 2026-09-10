@@ -37,6 +37,15 @@ local function IsTradeSkillOpen()
 end
 local extraWindows = { "GameMenuFrame", "SettingsPanel", "InterfaceOptionsFrame",
     "ChatConfigFrame", "StaticPopup1", "StaticPopup2", "StaticPopup3", "StaticPopup4" }
+local menuFrames = { "GameMenuFrame", "SettingsPanel", "InterfaceOptionsFrame",
+    "VideoOptionsFrame", "AudioOptionsFrame", "KeyBindingFrame", "AddonList", "HelpFrame" }
+local function IsMenuOpen()
+    for _, name in ipairs(menuFrames) do
+        local frame = _G[name]
+        if frame and frame:IsShown() then return true end
+    end
+    return false
+end
 local function HasOpenPanel()
     for name in pairs(UIPanelWindows or {}) do
         local frame = _G[name]
@@ -278,6 +287,10 @@ local function Activity()
         HideUI()
         return
     end
+    if enabled and hidden and IsMenuOpen() then
+        HideUI()
+        return
+    end
     if hidden then RestoreUI() end
 end
 
@@ -325,6 +338,23 @@ end
 local function ApplyMirrorTimerUI(keep, ancestors)
     for index = 1, MIRRORTIMER_NUMTIMERS or 3 do
         local frame = _G["MirrorTimer" .. index]
+        if frame then
+            keep[frame] = true
+            local parent = frame:GetParent()
+            while parent and parent ~= UIParent do
+                ancestors[parent] = true
+                parent = parent:GetParent()
+            end
+        end
+    end
+end
+
+-- Escape menus override every fade policy, including combat and loot. Preserve
+-- them before OnShow so opening a menu cannot expose an already-faded frame.
+-- Blizzard retains control of Show/Hide and the menu's frame strata.
+local function ApplyMenuUI(keep, ancestors)
+    for _, name in ipairs(menuFrames) do
+        local frame = _G[name]
         if frame then
             keep[frame] = true
             local parent = frame:GetParent()
@@ -435,6 +465,7 @@ HideUI = function()
     ApplyMirrorTimerUI(keepAuras, playerAncestors)
     ApplyCastingUI(keepAuras, playerAncestors)
     ApplyQuestTrackerUI(keepAuras, playerAncestors)
+    ApplyMenuUI(keepAuras, playerAncestors)
     for _, name in ipairs(auraFrames) do
         local frame = _G[name]
         if frame then
@@ -540,6 +571,7 @@ local function ApplySelectiveUI(mode)
     ApplyMirrorTimerUI(keep, ancestors)
     ApplyCastingUI(keep, ancestors)
     ApplyQuestTrackerUI(keep, ancestors)
+    ApplyMenuUI(keep, ancestors)
     -- All interactions use standard item and comparison tooltips without
     -- rediscovering tooltip frames across the entire UI on every refresh.
     local visibleFrames = { "GameTooltip", "ShoppingTooltip1", "ShoppingTooltip2" }
@@ -1089,15 +1121,9 @@ local function KeyboardActivity(_, key)
         targetClearingKeysDown[key] = true
         return
     end
-    -- Escape can close a window, clear the target, or cancel gathering. Suppress
-    -- both key edges: the window, target, or cast may be gone on key release.
-    if hidden and action == "TOGGLEGAMEMENU"
-        and (mailOpen or lootOpen or IsMapOpen() or IsQuestLogOpen() or IsCharacterOpen()
-            or IsInspectOpen()
-            or IsTradeSkillOpen() or trainerOpen or auctionOpen
-            or hidden == "tradeskill" or hidden == "trainer" or hidden == "auction"
-            or hidden == "character" or UnitExists("target")
-            or UnitCastingInfo("player") or UnitChannelInfo("player")) then
+    -- Escape can open a menu, close a window, clear a target or cancel a cast.
+    -- Neither key edge should reveal the HUD; menu frames are always preserved.
+    if hidden and action == "TOGGLEGAMEMENU" then
         targetClearingKeysDown[key] = true
         return
     end

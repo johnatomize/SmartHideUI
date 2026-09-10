@@ -77,6 +77,13 @@ local function setup(visible)
     frame("CastSibling", env.CastParent)
     frame("PopupParent", env.UIParent, true, 0.9)
     frame("PopupSibling", env.PopupParent)
+    frame("MenuParent", env.UIParent, true, 0.9)
+    frame("MenuSibling", env.MenuParent)
+    for _, name in ipairs({ "GameMenuFrame", "SettingsPanel", "InterfaceOptionsFrame",
+        "VideoOptionsFrame", "AudioOptionsFrame", "KeyBindingFrame", "AddonList",
+        "HelpFrame" }) do
+        frame(name, env.MenuParent, false, 0.85)
+    end
     for index = 1, 4 do
         local popup = frame("StaticPopup" .. index, env.PopupParent, false, 0.85)
         frame("StaticPopup" .. index .. "Button1", popup)
@@ -1064,6 +1071,42 @@ test("mail preserves visible entry with automatic bags and overrides", function(
         e.MailFrame:Hide(); s.event("MAIL_CLOSED")
         s.event("MAIL_SHOW"); e.MailFrame:Show(); s.tick(4); s.visible()
         assert(e.OpenMailFrame.alpha == 1)
+    end
+end)
+
+for _, mode in ipairs({ "idle", "combat", "loot", "quest", "bags", "cast" }) do
+    test("Escape menus override " .. mode, function()
+        local s, e = setup()
+        if mode == "combat" then s.combat = true; s.event("PLAYER_REGEN_DISABLED")
+        elseif mode == "loot" then s.loot()
+        elseif mode == "quest" then e.QuestFrame:Show(); s.event("QUEST_DETAIL")
+        elseif mode == "bags" then e.ContainerFrame1:Show(); s.tick()
+        elseif mode == "cast" then s.start("Opening") end
+        for _, name in ipairs({ "GameMenuFrame", "SettingsPanel", "InterfaceOptionsFrame",
+            "VideoOptionsFrame", "AudioOptionsFrame", "KeyBindingFrame", "AddonList",
+            "HelpFrame" }) do
+            s.key("OnKeyDown", "TOGGLEGAMEMENU")
+            e[name]:Show()
+            assert(e[name].alpha == 0.85 and e.MenuParent.alpha == 0.9,
+                "menu must be visible immediately, before the next update")
+            s.key("OnKeyUp", "TOGGLEGAMEMENU"); s.tick(4)
+            assert(e[name].alpha == 0.85 and e.MenuParent.alpha == 0.9)
+            assert(e.MenuSibling.alpha == 0)
+            s.hidden()
+            e[name]:Hide(); s.tick(); s.hidden()
+        end
+        e.SlashCmdList.SMARTHIDEUI("off"); s.visible()
+        assert(e.MenuSibling.alpha == 1 and e.GameMenuFrame.alpha == 0.85)
+    end)
+end
+
+test("Escape menus preserve visible entry and overrides", function()
+    local s, e = setup(true)
+    e.GameMenuFrame:Show(); s.tick(); s.visible()
+    for _, command in ipairs({ "show", "off" }) do
+        e.SlashCmdList.SMARTHIDEUI(command)
+        e.GameMenuFrame:Hide(); e.SettingsPanel:Show(); s.tick(4); s.visible()
+        assert(e.SettingsPanel.alpha == 0.85)
     end
 end)
 
