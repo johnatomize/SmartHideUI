@@ -7,7 +7,7 @@ local originalAlpha = {}
 local unsupportedAlpha = setmetatable({}, { __mode = "k" })
 local ApplyCombatUI, ApplyBagUI, ApplyQuestUI, ApplySpellbookUI, ApplyMapUI
 local ApplyQuestLogUI, ApplyLootUI, ApplyTradeSkillUI, ApplyTargetUI, ApplyChatUI
-local ApplyCharacterUI, ApplyInspectUI
+local ApplyCharacterUI, ApplyInspectUI, ApplyEditModeUI
 local lootOpen = false
 local merchantOpen = false
 local trainerOpen = false
@@ -51,6 +51,16 @@ local extraWindows = { "GameMenuFrame", "SettingsPanel", "InterfaceOptionsFrame"
     "ChatConfigFrame", "StaticPopup1", "StaticPopup2", "StaticPopup3", "StaticPopup4" }
 local menuFrames = { "GameMenuFrame", "SettingsPanel", "InterfaceOptionsFrame",
     "VideoOptionsFrame", "AudioOptionsFrame", "KeyBindingFrame", "AddonList", "HelpFrame" }
+local editModeFrames = { "EditModeManagerFrame", "EditModeSystemSettingsDialog",
+    "EditModeLayoutDialog", "EditModeImportLayoutDialog", "EditModeUnsavedChangesDialog" }
+local function IsEditModeOpen()
+    if not compat.forever then return false end
+    for _, name in ipairs(editModeFrames) do
+        local frame = _G[name]
+        if frame and frame:IsShown() then return true end
+    end
+    return false
+end
 local function IsMenuOpen()
     for _, name in ipairs(menuFrames) do
         local frame = _G[name]
@@ -235,6 +245,10 @@ local function Activity()
         ApplyCombatUI()
         return
     end
+    if enabled and hidden and IsEditModeOpen() then
+        ApplyEditModeUI()
+        return
+    end
     if enabled and lootOpen then
         if hidden then ApplyLootUI() end
         return
@@ -315,7 +329,7 @@ local function Activity()
         or hidden == "inspect"
         or hidden == "loot" or hidden == "tradeskill" or hidden == "target" or hidden == "chat"
         or hidden == "merchant" or hidden == "trainer" or hidden == "mail" or hidden == "auction"
-        or hidden == "taxi" or hidden == "petition") then
+        or hidden == "taxi" or hidden == "petition" or hidden == "editmode") then
         HideUI()
         return
     end
@@ -386,8 +400,8 @@ end
 -- Escape menus override every fade policy, including combat and loot. Preserve
 -- them before OnShow so opening a menu cannot expose an already-faded frame.
 -- Blizzard retains control of Show/Hide and the menu's frame strata.
-local function ApplyMenuUI(keep, ancestors)
-    for _, name in ipairs(menuFrames) do
+local function KeepNamedFrames(keep, ancestors, names)
+    for _, name in ipairs(names) do
         local frame = _G[name]
         if frame then
             keep[frame] = true
@@ -398,6 +412,16 @@ local function ApplyMenuUI(keep, ancestors)
             end
         end
     end
+end
+local function ApplyMenuUI(keep, ancestors)
+    KeepNamedFrames(keep, ancestors, menuFrames)
+end
+
+-- Edit Mode's manager and its dialogs are separate UIParent children. Keep
+-- their alpha ready before Blizzard shows them, including from the idle state.
+local function ApplyEditModeFrames(keep, ancestors)
+    if not compat.forever then return end
+    KeepNamedFrames(keep, ancestors, editModeFrames)
 end
 
 local function ApplyCastingUI(keep, ancestors)
@@ -454,6 +478,10 @@ end
 
 local hookedPlayerFrame
 HideUI = function()
+    if IsEditModeOpen() then
+        ApplyEditModeUI()
+        return
+    end
     if mailOpen then
         ApplyMailUI()
         return
@@ -505,6 +533,7 @@ HideUI = function()
     ApplyCastingUI(keepAuras, playerAncestors)
     ApplyQuestTrackerUI(keepAuras, playerAncestors)
     ApplyMenuUI(keepAuras, playerAncestors)
+    ApplyEditModeFrames(keepAuras, playerAncestors)
     for _, name in ipairs(auraFrames) do
         local frame = _G[name]
         if frame then
@@ -602,6 +631,7 @@ local function ApplySelectiveUI(mode)
     ApplyCastingUI(keep, ancestors)
     ApplyQuestTrackerUI(keep, ancestors)
     ApplyMenuUI(keep, ancestors)
+    ApplyEditModeFrames(keep, ancestors)
     -- All interactions use standard item and comparison tooltips without
     -- rediscovering tooltip frames across the entire UI on every refresh.
     local visibleFrames = { "GameTooltip", "ShoppingTooltip1", "ShoppingTooltip2" }
@@ -612,6 +642,7 @@ local function ApplySelectiveUI(mode)
     end
     ApplyInteractionPopups(visibleFrames, mode)
     local windowMode = mode == "map" or mode == "questlog" or mode == "character" or mode == "inspect"
+        or mode == "editmode"
         or mode == "tradeskill" or mode == "merchant" or mode == "trainer" or mode == "mail"
         or mode == "auction" or mode == "taxi" or mode == "petition"
     local modeFrames = (windowMode or mode == "target" or mode == "chat") and {}
@@ -785,6 +816,7 @@ ApplyTrainerUI = function() ApplySelectiveUI("trainer") end
 ApplyAuctionUI = function() ApplySelectiveUI("auction") end
 ApplyTaxiUI = function() ApplySelectiveUI("taxi") end
 ApplyPetitionUI = function() ApplySelectiveUI("petition") end
+ApplyEditModeUI = function() ApplySelectiveUI("editmode") end
 
 -- Track the event before Blizzard shows the window or opens bags. Both close
 -- notifications may arrive; neither should become generic full-UI activity.
@@ -1099,6 +1131,24 @@ local function HookSpellbook()
 end
 HookSpellbook()
 
+local hookedEditModeFrames = setmetatable({}, { __mode = "k" })
+local function HookEditMode()
+    if not compat.forever then return end
+    for _, name in ipairs(editModeFrames) do
+        local frame = _G[name]
+        if frame and not hookedEditModeFrames[frame] then
+            hookedEditModeFrames[frame] = true
+            frame:HookScript("OnShow", function()
+                if enabled and hidden then Activity() end
+            end)
+            frame:HookScript("OnHide", function()
+                if enabled and (hidden == "editmode" or not hidden) then Activity() end
+            end)
+        end
+    end
+end
+HookEditMode()
+
 local gamepadActive = false
 
 local function IsShown(name)
@@ -1279,6 +1329,7 @@ controller:SetScript("OnEvent", function(_, event, ...)
     HookCharacter()
     HookInspect()
     HookSpellbook()
+    HookEditMode()
     HookLoot()
     HookTradeSkills()
     HookInteractionPopups()
@@ -1431,12 +1482,17 @@ controller:SetScript("OnUpdate", function(_, elapsed)
     elapsedSinceCheck = elapsedSinceCheck + elapsed
     if elapsedSinceCheck < 0.05 then return end
     elapsedSinceCheck = 0
+    HookEditMode()
     if questTrackerVisibleUntil > 0 and not NeedsQuestTrackerUI() then
         questTrackerVisibleUntil = 0
         if hidden == "idle" then HideUI() end
     end
     if InCombat() then
         ApplyCombatUI()
+        ApplyBagButtons()
+        return
+    elseif IsEditModeOpen() then
+        if hidden then ApplyEditModeUI() end
         ApplyBagButtons()
         return
     elseif lootOpen then
@@ -1517,7 +1573,8 @@ controller:SetScript("OnUpdate", function(_, elapsed)
         or hidden == "questlog" or hidden == "character" or hidden == "inspect"
         or hidden == "loot" or hidden == "tradeskill"
         or hidden == "target" or hidden == "chat" or hidden == "merchant" or hidden == "trainer"
-        or hidden == "mail" or hidden == "auction" or hidden == "taxi" or hidden == "petition" then
+        or hidden == "mail" or hidden == "auction" or hidden == "taxi" or hidden == "petition"
+        or hidden == "editmode" then
         RestoreUI()
         HideUI()
         ApplyBagButtons()
