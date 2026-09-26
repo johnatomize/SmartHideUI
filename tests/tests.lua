@@ -405,6 +405,22 @@ test("loot can arrive before cast stop", function()
     s.start("Mining"); s.loot(); s.stop(); s.hidden()
     s.close(); s.event("BAG_UPDATE_DELAYED"); s.hidden()
 end)
+for _, eventFirst in ipairs({ false, true }) do
+    test("looting a corpse never reveals the HUD: close event first=" .. tostring(eventFirst), function()
+        local s, e = setup()
+        local setAlpha, reveals = e.Hud.SetAlpha, 0
+        e.Hud.SetAlpha = function(frame, alpha)
+            if alpha ~= 0 then reveals = reveals + 1 end
+            return setAlpha(frame, alpha)
+        end
+        s.loot(); s.hidden()
+        -- Taking an item can update inventory while the loot window remains open.
+        s.event("BAG_UPDATE_DELAYED"); s.tick(); s.hidden()
+        assert(e.LootFrame.alpha == 1, "loot window faded while taking an item")
+        s.close(eventFirst); s.event("BAG_UPDATE_DELAYED"); s.tick(); s.hidden()
+        assert(reveals == 0, "the HUD was restored during a hidden loot transition")
+    end)
+end
 test("movement cancellation and failed attempts", function()
     local s = setup()
     s.start("Herb Gathering")

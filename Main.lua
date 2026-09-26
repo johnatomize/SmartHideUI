@@ -541,7 +541,6 @@ HideUI = function()
         ApplyChatUI()
         return
     end
-    if hidden == "combat" then RestoreUI() end
     hidden = "idle"
     -- Keep UIParent shown so protected action buttons and bindings still work.
     -- Preserve the minimap's parent chain without reparenting Blizzard frames.
@@ -647,7 +646,7 @@ local function ApplySelectiveUI(mode)
         BeginEditMode()
         return
     end
-    if hidden ~= mode then RestoreUI() end
+    local transitioning = hidden ~= mode
     local keep, ancestors = { [controller] = true }, {}
     ApplyMinimapUI(keep, ancestors)
     ApplyMirrorTimerUI(keep, ancestors)
@@ -801,23 +800,35 @@ local function ApplySelectiveUI(mode)
             end
         end
     end
+    local function RestoreSavedAlpha(region)
+        if originalAlpha[region] ~= nil then
+            if pcall(region.SetAlpha, region, originalAlpha[region]) then
+                originalAlpha[region] = nil
+            end
+        end
+    end
+    local function RestoreSubtree(region)
+        RestoreSavedAlpha(region)
+        for _, child in ipairs({ region:GetChildren() }) do RestoreSubtree(child) end
+        for _, texture in ipairs({ region:GetRegions() }) do RestoreSubtree(texture) end
+    end
     local function Visit(region)
         if keep[region] or ancestors[region] then
-            if originalAlpha[region] ~= nil then
-                if pcall(region.SetAlpha, region, originalAlpha[region]) then
-                    originalAlpha[region] = nil
-                end
+            if keep[region] then
+                if transitioning then RestoreSubtree(region)
+                else RestoreSavedAlpha(region) end
+                return
             end
-            if keep[region] then return end
+            RestoreSavedAlpha(region)
             for _, child in ipairs({ region:GetChildren() }) do Visit(child) end
             for _, texture in ipairs({ region:GetRegions() }) do Visit(texture) end
         else
             FadeAlpha(region)
         end
     end
+    hidden = mode
     for _, child in ipairs({ UIParent:GetChildren() }) do Visit(child) end
     for _, region in ipairs({ UIParent:GetRegions() }) do Visit(region) end
-    hidden = mode
 end
 
 ApplyCombatUI = function() ApplySelectiveUI("combat") end
@@ -1574,7 +1585,6 @@ controller:SetScript("OnUpdate", function(_, elapsed)
         ApplyBagButtons()
         return
     elseif hidden == "quest" then
-        RestoreUI()
         if AreBagsOpen() then ApplyBagUI() else HideUI() end
         ApplyBagButtons()
         return
@@ -1595,7 +1605,6 @@ controller:SetScript("OnUpdate", function(_, elapsed)
         or hidden == "loot" or hidden == "tradeskill"
         or hidden == "target" or hidden == "chat" or hidden == "merchant" or hidden == "trainer"
         or hidden == "mail" or hidden == "auction" or hidden == "taxi" or hidden == "petition" then
-        RestoreUI()
         HideUI()
         ApplyBagButtons()
         return
