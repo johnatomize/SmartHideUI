@@ -28,6 +28,7 @@ local petitionOpen = false
 local petitionFrames = { "PetitionFrame" }
 local questTrackerRevealDuration = 10
 local questTrackerVisibleUntil = 0
+local recipeAlertFrames = setmetatable({}, { __mode = "k" })
 local function NeedsQuestTrackerUI()
     return GetTime() < questTrackerVisibleUntil
 end
@@ -443,6 +444,19 @@ local function ApplyEditModeFrames(keep, ancestors)
     KeepNamedFrames(keep, ancestors, editModeFrames)
 end
 
+-- Recipe toasts are unnamed, pooled frames. Keep only their frames and parent
+-- chains; Blizzard remains responsible for showing, animating and hiding them.
+local function ApplyRecipeAlertUI(keep, ancestors)
+    for frame in pairs(recipeAlertFrames) do
+        keep[frame] = true
+        local parent = frame:GetParent()
+        while parent and parent ~= UIParent do
+            ancestors[parent] = true
+            parent = parent:GetParent()
+        end
+    end
+end
+
 local function ApplyCastingUI(keep, ancestors)
     -- Preserve the bar before OnShow; Blizzard owns its progress and fade-out.
     for _, name in ipairs({ "CastingBarFrame", "PlayerCastingBarFrame" }) do
@@ -552,6 +566,7 @@ HideUI = function()
     ApplyQuestTrackerUI(keepAuras, playerAncestors)
     ApplyMenuUI(keepAuras, playerAncestors)
     ApplyEditModeFrames(keepAuras, playerAncestors)
+    ApplyRecipeAlertUI(keepAuras, playerAncestors)
     for _, name in ipairs(auraFrames) do
         local frame = _G[name]
         if frame then
@@ -654,6 +669,7 @@ local function ApplySelectiveUI(mode)
     ApplyQuestTrackerUI(keep, ancestors)
     ApplyMenuUI(keep, ancestors)
     ApplyEditModeFrames(keep, ancestors)
+    ApplyRecipeAlertUI(keep, ancestors)
     -- All interactions use standard item and comparison tooltips without
     -- rediscovering tooltip frames across the entire UI on every refresh.
     local visibleFrames = { "GameTooltip", "ShoppingTooltip1", "ShoppingTooltip2" }
@@ -1037,6 +1053,21 @@ local function HookInteractionPopups()
 end
 HookInteractionPopups()
 
+local hookedRecipeAlertSystem
+local function HookRecipeAlerts()
+    local system = NewRecipeLearnedAlertSystem
+    if not system or system == hookedRecipeAlertSystem
+        or type(system.setUpFunction) ~= "function" then return end
+    hookedRecipeAlertSystem = system
+    hooksecurefunc(system, "setUpFunction", function(frame)
+        recipeAlertFrames[frame] = true
+        if enabled and hidden then
+            if hidden == "idle" then HideUI() else ApplySelectiveUI(hidden) end
+        end
+    end)
+end
+HookRecipeAlerts()
+
 local function TradeSkillClosed()
     if not enabled or not hidden then return end
     -- CLOSE and OnHide can both fire, in either order. Once idle, a second
@@ -1328,6 +1359,7 @@ for _, event in ipairs({
     "QUEST_COMPLETE", "QUEST_GREETING", "QUEST_PROGRESS", "GOSSIP_SHOW",
     "CONFIRM_BINDER",
     "QUEST_WATCH_UPDATE",
+    "NEW_RECIPE_LEARNED",
     "MERCHANT_SHOW", "MERCHANT_CLOSED", "MAIL_SHOW", "MAIL_CLOSED", "PLAYER_EQUIPMENT_CHANGED",
     "TRAINER_SHOW", "TRAINER_CLOSED",
     "AUCTION_HOUSE_SHOW", "AUCTION_HOUSE_CLOSED",
@@ -1369,6 +1401,12 @@ controller:SetScript("OnEvent", function(_, event, ...)
     HookTaxi()
     HookPetition()
     HookMail()
+    HookRecipeAlerts()
+    if event == "NEW_RECIPE_LEARNED" then
+        -- Blizzard creates and times the alert. Learning a recipe is not
+        -- general activity and must not restore the rest of the HUD.
+        return
+    end
     if event == "TAXIMAP_OPENED" then
         taxiOpen = true
         if enabled and hidden then Activity() end
@@ -1512,6 +1550,7 @@ controller:SetScript("OnUpdate", function(_, elapsed)
     if elapsedSinceCheck < 0.05 then return end
     elapsedSinceCheck = 0
     HookEditMode()
+    HookRecipeAlerts()
     if IsEditModeOpen() then
         BeginEditMode()
         ApplyBagButtons()
