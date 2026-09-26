@@ -1,4 +1,5 @@
-local addonName = ...
+local addonName, addon = ...
+local compat = addon.compat
 local controller = CreateFrame("Frame", "SmartHideUIController")
 local enabled, delay, lastActivity = true, 3, 0
 local hidden = false
@@ -30,13 +31,21 @@ local questTrackerVisibleUntil = 0
 local function NeedsQuestTrackerUI()
     return GetTime() < questTrackerVisibleUntil
 end
-local tradeSkillFrames = { "TradeSkillFrame", "CraftFrame" }
-local function IsTradeSkillOpen()
-    for _, name in ipairs(tradeSkillFrames) do
+local tradeSkillFrames = compat.tradeSkillFrames
+local function AnyShown(names)
+    for _, name in ipairs(names) do
         local frame = _G[name]
-        if frame and frame:IsShown() then return true end
+        if frame then
+            local shown
+            if frame.IsVisible then shown = frame:IsVisible()
+            else shown = frame:IsShown() end
+            if shown then return true end
+        end
     end
     return false
+end
+local function IsTradeSkillOpen()
+    return AnyShown(tradeSkillFrames)
 end
 local extraWindows = { "GameMenuFrame", "SettingsPanel", "InterfaceOptionsFrame",
     "ChatConfigFrame", "StaticPopup1", "StaticPopup2", "StaticPopup3", "StaticPopup4" }
@@ -62,13 +71,13 @@ local function HasOpenPanel()
 end
 local HideUI
 local function IsQuestLogOpen()
-    return QuestLogFrame and QuestLogFrame:IsShown()
+    return AnyShown(compat.questLogFrames)
 end
 local function IsMapOpen()
     return WorldMapFrame and WorldMapFrame:IsShown()
 end
 local function IsSpellbookOpen()
-    return SpellBookFrame and SpellBookFrame:IsShown()
+    return AnyShown(compat.spellbookFrames)
 end
 local function IsCharacterOpen()
     return CharacterFrame and CharacterFrame:IsShown()
@@ -99,10 +108,7 @@ local function IsBinderConfirmationOpen()
     return false
 end
 local bagButtonAlpha = {}
-local bagButtons = {
-    "MainMenuBarBackpackButton", "CharacterBag0Slot", "CharacterBag1Slot",
-    "CharacterBag2Slot", "CharacterBag3Slot", "KeyRingButton",
-}
+local bagButtons = compat.bagButtons
 
 local function AreBagsOpen()
     if ContainerFrameCombinedBags and ContainerFrameCombinedBags:IsShown() then return true end
@@ -114,20 +120,25 @@ local function AreBagsOpen()
 end
 
 local function ApplyBagButtons()
-    local show = not enabled or (hidden ~= "loot" and AreBagsOpen())
+    local show = not enabled or not hidden or (hidden ~= "loot" and AreBagsOpen())
     for _, name in ipairs(bagButtons) do
         local button = _G[name]
         if button then
             if show then
-                if bagButtonAlpha[button] ~= nil then
-                    button:SetAlpha(bagButtonAlpha[button])
+                if bagButtonAlpha[button] ~= nil
+                    and pcall(button.SetAlpha, button, bagButtonAlpha[button]) then
                     bagButtonAlpha[button] = nil
                 end
             else
                 if bagButtonAlpha[button] == nil then
-                    bagButtonAlpha[button] = button:GetAlpha()
+                    local ok, alpha = pcall(button.GetAlpha, button)
+                    if ok and not (issecretvalue and issecretvalue(alpha)) then
+                        bagButtonAlpha[button] = originalAlpha[button] or alpha
+                    end
                 end
-                button:SetAlpha(0)
+                if bagButtonAlpha[button] ~= nil then
+                    pcall(button.SetAlpha, button, 0)
+                end
             end
         end
     end
@@ -156,6 +167,10 @@ for index = 1, 3 do
 end
 local hookedAuraFrames = setmetatable({}, { __mode = "k" })
 
+local function IsSecret(value)
+    return issecretvalue and issecretvalue(value)
+end
+
 local function HasPlayerDebuff()
     if C_UnitAuras and C_UnitAuras.GetAuraDataByIndex then
         return C_UnitAuras.GetAuraDataByIndex("player", 1, "HARMFUL") ~= nil
@@ -166,10 +181,15 @@ end
 -- Bandaging uses a channel. Compose aura visibility with the existing cast
 -- policy without adding action bars or unrelated HUD controls.
 local function NeedsAuras()
+    -- Forever can restrict aura results during combat. Keep Blizzard's aura
+    -- display available instead of branching on restricted data.
+    if compat.forever then return true end
     return UnitChannelInfo("player") ~= nil or HasPlayerDebuff()
 end
 
 local function NeedsPlayerFrame()
+    -- UnitHealth is secret on Forever, so retain the native safety display.
+    if compat.forever then return true end
     if InCombat() then return true end
     if UnitHealth("player") < UnitHealthMax("player") then return true end
     -- Check mana even in shapeshift forms, and energy when it is active.
@@ -181,13 +201,18 @@ local function NeedsPlayerFrame()
         and UnitPower("player", 3) < UnitPowerMax("player", 3)
 end
 
+local function IsPlayerCasting()
+    local cast = UnitCastingInfo("player")
+    if IsSecret(cast) or cast ~= nil then return true end
+    local channel = UnitChannelInfo("player")
+    return IsSecret(channel) or channel ~= nil
+end
+
 local function RestoreUI()
     hidden = false
     for region, alpha in pairs(originalAlpha) do
-        pcall(region.SetAlpha, region, alpha)
+        if pcall(region.SetAlpha, region, alpha) then originalAlpha[region] = nil end
     end
-    wipe(originalAlpha)
-    hidden = false
     ApplyBagButtons()
 end
 
@@ -282,7 +307,7 @@ local function Activity()
     -- Opening objects uses a cast. Keep the current hidden policy while its
     -- progress runs, including activity detected by the update loop.
     if enabled and hidden and (NeedsQuestTrackerUI()
-        or UnitCastingInfo("player") or UnitChannelInfo("player")) then
+        or IsPlayerCasting()) then
         HideUI()
         return
     end
@@ -309,7 +334,9 @@ local function FadeAlpha(region)
     if region == ZoneTextFrame or region == SubZoneTextFrame then return end
     if unsupportedAlpha[region] then return end
     if region.IsForbidden and region:IsForbidden() then return end
+    if InCombatLockdown() and region.IsProtected and region:IsProtected() then return end
     local ok, alpha = pcall(region.GetAlpha, region)
+    if IsSecret(alpha) then return end
     if not ok or type(alpha) ~= "number" then
         unsupportedAlpha[region] = true
         return
@@ -409,8 +436,9 @@ local function FadeRegion(region, playerAncestors, keepPlayer, keepAuras)
     if region == controller or region == GameTooltip then return end
     if (keepPlayer and region == PlayerFrame) or playerAncestors[region] or keepAuras[region] then
         if originalAlpha[region] ~= nil then
-            pcall(region.SetAlpha, region, originalAlpha[region])
-            originalAlpha[region] = nil
+            if pcall(region.SetAlpha, region, originalAlpha[region]) then
+                originalAlpha[region] = nil
+            end
         end
         if (keepPlayer and region == PlayerFrame) or keepAuras[region] then return end
         for _, child in ipairs({ region:GetChildren() }) do
@@ -482,7 +510,7 @@ HideUI = function()
         if frame then
             if not hookedAuraFrames[frame] then
                 hooksecurefunc(frame, "SetAlpha", function(aura, alpha)
-                    if alpha ~= 0 and enabled and hidden == "idle"
+                    if not IsSecret(alpha) and alpha ~= 0 and enabled and hidden == "idle"
                         and not InCombat() and not NeedsAuras() then
                         FadeAlpha(aura)
                     end
@@ -502,7 +530,8 @@ HideUI = function()
     if PlayerFrame then
         if hookedPlayerFrame ~= PlayerFrame then
             hooksecurefunc(PlayerFrame, "SetAlpha", function(frame, alpha)
-                if alpha ~= 0 and enabled and hidden == "idle" and not NeedsPlayerFrame() then
+                if not IsSecret(alpha) and alpha ~= 0 and enabled and hidden == "idle"
+                    and not NeedsPlayerFrame() then
                     frame:SetAlpha(0)
                 end
             end)
@@ -530,18 +559,8 @@ HideUI = function()
     hidden = "idle"
 end
 
--- Share action controls between bag, spellbook and combat modes. Individual main-bar buttons
--- are listed because Classic shares their parent with bags and the micro menu.
-local actionFrames = {
-    "MultiBarBottomLeft", "MultiBarBottomRight", "MultiBarLeft", "MultiBarRight",
-    "MultiBar5", "MultiBar6", "MultiBar7", "PetActionBarFrame", "PetActionBar",
-    "StanceBarFrame", "StanceBar", "PossessBarFrame", "PossessActionBar",
-    "OverrideActionBar", "ExtraActionBarFrame", "MultiCastActionBarFrame",
-    "ActionBarUpButton", "ActionBarDownButton", "MainMenuBarPageNumber",
-}
-for index = 1, 12 do
-    actionFrames[#actionFrames + 1] = "ActionButton" .. index
-end
+-- Share each client's native action controls between bag, spellbook and combat modes.
+local actionFrames = compat.actionFrames
 local combatFrames = {
     "GameTooltip", "ZoneTextFrame", "SubZoneTextFrame",
     "PlayerFrame", "TargetFrame", "BuffFrame", "DebuffFrame", "TemporaryEnchantFrame",
@@ -654,7 +673,7 @@ local function ApplySelectiveUI(mode)
         visibleFrames[#visibleFrames + 1] = "WorldMapFrame"
     end
     if mode ~= "loot" and IsQuestLogOpen() then
-        visibleFrames[#visibleFrames + 1] = "QuestLogFrame"
+        for _, name in ipairs(compat.questLogFrames) do visibleFrames[#visibleFrames + 1] = name end
     end
     if mode ~= "loot" and IsCharacterOpen() then
         visibleFrames[#visibleFrames + 1] = "CharacterFrame"
@@ -681,7 +700,7 @@ local function ApplySelectiveUI(mode)
     end
     -- Compose the spellbook with quest, bag and combat controls when they overlap.
     if mode ~= "loot" and IsSpellbookOpen() then
-        visibleFrames[#visibleFrames + 1] = "SpellBookFrame"
+        for _, name in ipairs(compat.spellbookFrames) do visibleFrames[#visibleFrames + 1] = name end
         if mode == "quest" then
             for _, name in ipairs(actionFrames) do visibleFrames[#visibleFrames + 1] = name end
         end
@@ -732,8 +751,9 @@ local function ApplySelectiveUI(mode)
     local function Visit(region)
         if keep[region] or ancestors[region] then
             if originalAlpha[region] ~= nil then
-                pcall(region.SetAlpha, region, originalAlpha[region])
-                originalAlpha[region] = nil
+                if pcall(region.SetAlpha, region, originalAlpha[region]) then
+                    originalAlpha[region] = nil
+                end
             end
             if keep[region] then return end
             for _, child in ipairs({ region:GetChildren() }) do Visit(child) end
@@ -992,18 +1012,22 @@ local function HookLoot()
 end
 HookLoot()
 
-local hookedQuestLog
+local hookedQuestLogs = setmetatable({}, { __mode = "k" })
 local function HookQuestLog()
-    if not QuestLogFrame or hookedQuestLog == QuestLogFrame then return end
-    hookedQuestLog = QuestLogFrame
-    QuestLogFrame:HookScript("OnShow", function()
-        if enabled and hidden then
-            if InCombat() then ApplyCombatUI()
-            elseif lootOpen then ApplyLootUI()
-            elseif IsMapOpen() then ApplyMapUI()
-            else ApplyQuestLogUI() end
+    for _, name in ipairs(compat.questLogFrames) do
+        local frame = _G[name]
+        if frame and not hookedQuestLogs[frame] then
+            hookedQuestLogs[frame] = true
+            frame:HookScript("OnShow", function()
+                if enabled and hidden then
+                    if InCombat() then ApplyCombatUI()
+                    elseif lootOpen then ApplyLootUI()
+                    elseif IsMapOpen() then ApplyMapUI()
+                    else ApplyQuestLogUI() end
+                end
+            end)
         end
-    end)
+    end
 end
 HookQuestLog()
 
@@ -1058,18 +1082,24 @@ local function HookMap()
 end
 HookMap()
 
-local hookedSpellbook
+local hookedSpellbooks = setmetatable({}, { __mode = "k" })
 local function HookSpellbook()
-    if not SpellBookFrame or hookedSpellbook == SpellBookFrame then return end
-    hookedSpellbook = SpellBookFrame
-    SpellBookFrame:HookScript("OnShow", function()
-        if enabled and hidden then
-            if InCombat() then ApplyCombatUI()
-            elseif lootOpen then ApplyLootUI() else ApplySpellbookUI() end
+    for _, name in ipairs(compat.spellbookFrames) do
+        local frame = _G[name]
+        if frame and not hookedSpellbooks[frame] then
+            hookedSpellbooks[frame] = true
+            frame:HookScript("OnShow", function()
+                if enabled and hidden then
+                    if InCombat() then ApplyCombatUI()
+                    elseif lootOpen then ApplyLootUI() else ApplySpellbookUI() end
+                end
+            end)
         end
-    end)
+    end
 end
 HookSpellbook()
+
+local gamepadActive = false
 
 local function IsShown(name)
     local frame = _G[name]
@@ -1079,13 +1109,18 @@ end
 local function IsInteracting()
     if IsChatting() then return true end
     if InCombatLockdown() or UnitAffectingCombat("player")
-        or UnitCastingInfo("player") or UnitChannelInfo("player")
+        or IsPlayerCasting()
         or (GetCurrentKeyBoardFocus and GetCurrentKeyBoardFocus()) then
         return true
     end
     -- Open panels remain readable even when the mouse stops moving.
     for name in pairs(UIPanelWindows or {}) do
         if IsShown(name) then return true end
+    end
+    if IsSpellbookOpen() or IsTradeSkillOpen() or IsQuestLogOpen()
+        or IsMapOpen() or IsCharacterOpen() or IsQuestConversationOpen()
+        or merchantOpen or trainerOpen or auctionOpen or mailOpen or petitionOpen then
+        return true
     end
     for _, name in ipairs({ "GameMenuFrame", "SettingsPanel", "InterfaceOptionsFrame",
         "ChatConfigFrame" }) do
@@ -1102,6 +1137,9 @@ local function IsInteracting()
     end
     -- Inspecting a world unit should not reveal the rest of the UI.
     if UnitExists("mouseover") then return false end
+    -- Native gamepad navigation drives the Blizzard panel lifecycle. A cursor
+    -- hovering over a faded HUD control is not controller activity.
+    if gamepadActive then return false end
     local foci = GetMouseFoci and GetMouseFoci()
         or (GetMouseFocus and { GetMouseFocus() }) or {}
     for _, focus in ipairs(foci) do
@@ -1220,15 +1258,22 @@ for _, event in ipairs({
     "PLAYER_DEAD", "PLAYER_ALIVE", "PLAYER_UNGHOST",
     "CHAT_MSG_WHISPER", "CHAT_MSG_BN_WHISPER", "CHAT_MSG_SAY",
 }) do
-    controller:RegisterEvent(event)
+    pcall(controller.RegisterEvent, controller, event)
+end
+if compat.forever then
+    pcall(controller.RegisterEvent, controller, "GAME_PAD_ACTIVE_CHANGED")
 end
 for _, event in ipairs({ "UNIT_HEALTH", "UNIT_MAXHEALTH", "UNIT_POWER_UPDATE",
     "UNIT_MAXPOWER", "UNIT_DISPLAYPOWER", "UNIT_AURA",
     "UNIT_SPELLCAST_START", "UNIT_SPELLCAST_STOP", "UNIT_SPELLCAST_SUCCEEDED",
     "UNIT_SPELLCAST_CHANNEL_START", "UNIT_SPELLCAST_CHANNEL_STOP" }) do
-    controller:RegisterUnitEvent(event, "player")
+    pcall(controller.RegisterUnitEvent, controller, event, "player")
 end
-controller:SetScript("OnEvent", function(_, event)
+controller:SetScript("OnEvent", function(_, event, ...)
+    if event == "GAME_PAD_ACTIVE_CHANGED" then
+        gamepadActive = ...
+        return
+    end
     HookMap()
     HookQuestLog()
     HookCharacter()
@@ -1379,7 +1424,10 @@ end)
 
 local elapsedSinceCheck = 0
 controller:SetScript("OnUpdate", function(_, elapsed)
-    if not enabled then return end
+    if not enabled then
+        if next(originalAlpha) then RestoreUI() end
+        return
+    end
     elapsedSinceCheck = elapsedSinceCheck + elapsed
     if elapsedSinceCheck < 0.05 then return end
     elapsedSinceCheck = 0

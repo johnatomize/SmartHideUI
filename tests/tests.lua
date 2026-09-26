@@ -6,18 +6,28 @@ if not source then
     source = file:read("*a")
     file:close()
 end
+local compatFile = assert(io.open("Compat.lua", "r"))
+local compatSource = compatFile:read("*a")
+compatFile:close()
 
-local function setup(visible)
+local function setup(visible, client)
     local env = setmetatable({}, { __index = _G })
     env._G = env
     local s = { time = 0, combat = false, binding = "" }
     local methods = {}
     function methods:GetAlpha() return self.alpha end
-    function methods:SetAlpha(alpha) self.alpha = alpha end
+    function methods:SetAlpha(alpha)
+        if self.rejectCombatAlpha and s.combat then error("protected alpha is locked") end
+        self.alpha = alpha
+    end
     function methods:GetParent() return self.parent end
     function methods:GetChildren() return unpack(self.children) end
     function methods:GetRegions() return unpack(self.regions) end
     function methods:IsShown() return self.shown end
+    function methods:IsVisible()
+        return self.shown and (not self.parent or self.parent:IsVisible())
+    end
+    function methods:IsProtected() return self.protected or false end
     function methods:IsObjectType(kind) return self.kind == kind end
     function methods:IsForbidden() return false end
     function methods:HasFocus() return self.focused or false end
@@ -71,6 +81,10 @@ local function setup(visible)
     frame("PlayerFrame", env.UIParent, true, 0.7)
     frame("TargetFrame", env.UIParent, true, 0.9)
     frame("MainMenuBarBackpackButton", env.MainMenuBar)
+    if client == "forever" then
+        frame("MainActionBar", env.UIParent, true, 0.8)
+        frame("BagsBar", env.UIParent, true, 0.7)
+    end
     frame("CastParent", env.UIParent, true, 0.9)
     frame("CastingBarFrame", env.CastParent, false, 0.75)
     frame("PlayerCastingBarFrame", env.CastParent, false, 0.6)
@@ -95,6 +109,18 @@ local function setup(visible)
         "FlightMapFrame", "PetitionFrame" }) do
         frame(name, env.UIParent, false)
     end
+    if client == "forever" then
+        frame("PlayerSpellsFrame", env.UIParent, false, 0.75)
+        frame("ProfessionsFrame", env.UIParent, false, 0.8)
+        for index, child in ipairs(env.UIParent.children) do
+            if child == env.SpellBookFrame then
+                table.remove(env.UIParent.children, index)
+                break
+            end
+        end
+        env.SpellBookFrame.parent = env.PlayerSpellsFrame
+        table.insert(env.PlayerSpellsFrame.children, env.SpellBookFrame)
+    end
     frame("InspectPaperDollFrame", env.InspectFrame, true, 0.8)
     frame("InspectHeadSlot", env.InspectPaperDollFrame, true, 0.9)
     frame("InspectModelFrame", env.InspectFrame, true, 0.7)
@@ -106,15 +132,24 @@ local function setup(visible)
         AuctionHouseFrame = {}, AuctionFrame = {}, PetitionFrame = {} }
     env.SlashCmdList = {}
     env.CreateFrame = function(_, name) return frame(name, env.UIParent) end
+    env.GetBuildInfo = function()
+        return "", "", "", client == "forever" and 16001 or 20506
+    end
     env.GetTime = function() return s.time end
     env.InCombatLockdown = function() return s.combat end
     env.UnitAffectingCombat = env.InCombatLockdown
-    env.UnitHealth = function() return 100 end
+    env.UnitHealth = function()
+        if client == "forever" then error("secret health was read") end
+        return 100
+    end
     env.UnitHealthMax = env.UnitHealth
     env.UnitPower = env.UnitHealth
     env.UnitPowerMax = env.UnitHealth
     env.UnitPowerType = function() return 0 end
-    env.UnitDebuff = function() return s.debuff end
+    env.UnitDebuff = function()
+        if client == "forever" then error("restricted aura was read") end
+        return s.debuff
+    end
     env.UnitCastingInfo = function() return s.cast end
     env.UnitChannelInfo = function() return s.channel end
     env.UnitExists = function(unit) return unit == "target" and s.target or false end
@@ -126,6 +161,7 @@ local function setup(visible)
     env.IsAltKeyDown = env.IsShiftKeyDown
     env.GetBindingAction = function() return s.binding end
     env.GetMouseFoci = function() return { env.WorldFrame } end
+    env.issecretvalue = function(value) return value == "SECRET" end
     env.wipe = function(t) for key in pairs(t) do t[key] = nil end end
     env.print = function() end
     env.hooksecurefunc = function(object, method, callback)
@@ -135,10 +171,15 @@ local function setup(visible)
             callback(self, ...)
         end
     end
-    setfenv(assert(loadstring(source, "@Main.lua")), env)("SmartHideUI")
+    local addon = {}
+    setfenv(assert(loadstring(compatSource, "@Compat.lua")), env)("SmartHideUI", addon)
+    setfenv(assert(loadstring(source, "@Main.lua")), env)("SmartHideUI", addon)
     local controller = env.SmartHideUIController
-    function s.event(event)
-        if controller.events[event] then controller:Fire("OnEvent", event, "player") end
+    function s.event(event, ...)
+        if controller.events[event] then controller:Fire("OnEvent", event, ...) end
+    end
+    function s.createFrame(name, parent, shown, alpha)
+        return frame(name, parent or env.UIParent, shown, alpha)
     end
     function s.tick(seconds)
         s.time = s.time + (seconds or 0.05)
@@ -1143,6 +1184,79 @@ test("Escape menus preserve visible entry and overrides", function()
         e.GameMenuFrame:Hide(); e.SettingsPanel:Show(); s.tick(4); s.visible()
         assert(e.SettingsPanel.alpha == 0.85)
     end
+end)
+
+test("Forever keeps safety UI without reading secret health", function()
+    local s, e = setup(false, "forever")
+    assert(e.PlayerFrame.alpha == 0.7)
+    assert(e.BuffFrame.alpha == 0.8 and e.DebuffFrame.alpha == 0.9)
+    assert(e.MainActionBar.alpha == 0 and e.BagsBar.alpha == 0)
+    e.SlashCmdList.SMARTHIDEUI("off")
+    assert(e.MainActionBar.alpha == 0.8 and e.BagsBar.alpha == 0.7)
+    s.visible()
+end)
+
+test("Forever bags retain action bar and bag controls", function()
+    local s, e = setup(false, "forever")
+    e.ContainerFrame1:Show(); s.event("BAG_UPDATE_DELAYED"); s.tick()
+    s.hidden()
+    assert(e.ContainerFrame1.alpha == 1 and e.MainActionBar.alpha == 0.8)
+    assert(e.BagsBar.alpha == 0.7)
+    e.ContainerFrame1:Hide(); s.tick(); s.hidden()
+    assert(e.MainActionBar.alpha == 0 and e.BagsBar.alpha == 0)
+end)
+
+test("Forever player spells and professions use their own policies", function()
+    local s, e = setup(false, "forever")
+    e.PlayerSpellsFrame:Show(); s.tick(); s.hidden()
+    assert(e.PlayerSpellsFrame.alpha == 0.75 and e.MainActionBar.alpha == 0.8)
+    e.PlayerSpellsFrame:Hide(); s.tick(); s.hidden()
+    e.ProfessionsFrame:Show(); s.tick(); s.hidden()
+    assert(e.ProfessionsFrame.alpha == 0.8 and e.MainActionBar.alpha == 0)
+    e.ProfessionsFrame:Hide(); s.tick(); s.hidden()
+end)
+
+test("Forever gamepad movement and panel navigation stay selective", function()
+    local s, e = setup(false, "forever")
+    s.event("GAME_PAD_ACTIVE_CHANGED", true)
+    e.GetMouseFoci = function() return { e.Hud } end
+    s.tick(4); s.hidden()
+    e.GameMenuFrame:Show(); s.tick(); s.hidden()
+    assert(e.GameMenuFrame.alpha == 0.85)
+    e.GameMenuFrame:Hide(); s.tick(); s.hidden()
+    s.event("GAME_PAD_ACTIVE_CHANGED", false)
+end)
+
+test("Forever late player spells and visible entry restore cleanly", function()
+    local s, e = setup(true, "forever")
+    e.PlayerSpellsFrame = nil
+    e.SpellBookFrame = nil
+    local spells = s.createFrame("PlayerSpellsFrame", e.UIParent, false, 0.6)
+    s.event("ADDON_LOADED", "Blizzard_PlayerSpells")
+    spells:Show(); s.tick(4); s.visible()
+    e.SlashCmdList.SMARTHIDEUI("show")
+    assert(spells.alpha == 0.6 and e.Hud.alpha == 0.65)
+end)
+
+test("Forever overlapping profession, bags and combat keeps controls", function()
+    local s, e = setup(false, "forever")
+    e.ProfessionsFrame:Show(); e.ContainerFrame1:Show(); s.tick()
+    s.combat = true; s.event("PLAYER_REGEN_DISABLED"); s.tick(); s.hidden()
+    assert(e.ProfessionsFrame.alpha == 0.8 and e.ContainerFrame1.alpha == 1)
+    assert(e.MainActionBar.alpha == 0.8 and e.BagsBar.alpha == 0.7)
+    s.combat = false; s.event("PLAYER_REGEN_ENABLED")
+    e.ContainerFrame1:Hide(); e.ProfessionsFrame:Hide(); s.tick(); s.hidden()
+end)
+
+test("Forever retries protected alpha restoration after combat", function()
+    local s, e = setup(false, "forever")
+    e.BagsBar.protected, e.BagsBar.rejectCombatAlpha = true, true
+    s.combat = true; s.event("PLAYER_REGEN_DISABLED")
+    e.SlashCmdList.SMARTHIDEUI("off")
+    assert(e.BagsBar.alpha == 0)
+    s.combat = false; s.tick()
+    assert(e.BagsBar.alpha == 0.7)
+    s.visible()
 end)
 
 for _, failure in ipairs(failures) do print("FAIL " .. failure) end
