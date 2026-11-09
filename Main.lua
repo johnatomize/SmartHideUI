@@ -7,7 +7,7 @@ local originalAlpha = {}
 local unsupportedAlpha = setmetatable({}, { __mode = "k" })
 local ApplyCombatUI, ApplyBagUI, ApplyQuestUI, ApplySpellbookUI, ApplyMapUI
 local ApplyQuestLogUI, ApplyLootUI, ApplyTradeSkillUI, ApplyTargetUI, ApplyChatUI
-local ApplyCharacterUI, ApplyInspectUI
+local ApplyCharacterUI, ApplyInspectUI, ApplyJournalUI
 local lootOpen = false
 local merchantOpen = false
 local trainerOpen = false
@@ -99,6 +99,12 @@ local function IsInspectOpen()
         if frame and frame:IsShown() then return true end
     end
     return false
+end
+-- Addon journals are plain UIParent children rather than Blizzard UIPanels.
+-- Chronicle (ForeverChronicle) creates its journal the first time it opens.
+local journalFrames = { "ChronicleJournalFrame" }
+local function IsJournalOpen()
+    return AnyShown(journalFrames)
 end
 local questFrames = { "QuestFrame", "GossipFrame" }
 local function IsQuestConversationOpen()
@@ -197,18 +203,32 @@ local function NeedsAuras()
     return UnitChannelInfo("player") ~= nil or HasPlayerDebuff()
 end
 
+-- Forever may return secret health and power values. Never compare them: an
+-- unreadable value keeps the native safety display visible instead.
+local function ReadPlayer(read, ...)
+    local ok, value = pcall(read, "player", ...)
+    if ok and type(value) == "number" and not IsSecret(value) then return value end
+end
+
+local function IsBelowMax(read, readMax, ...)
+    local current, maximum = ReadPlayer(read, ...), ReadPlayer(readMax, ...)
+    if not current or not maximum then return true end
+    return current < maximum
+end
+
 local function NeedsPlayerFrame()
-    -- UnitHealth is secret on Forever, so retain the native safety display.
-    if compat.forever then return true end
     if InCombat() then return true end
-    if UnitHealth("player") < UnitHealthMax("player") then return true end
+    if IsBelowMax(UnitHealth, UnitHealthMax) then return true end
     -- Check mana even in shapeshift forms, and energy when it is active.
-    if UnitPower("player", 0) < UnitPowerMax("player", 0) then return true end
-    local powerType = UnitPowerType("player")
+    if IsBelowMax(UnitPower, UnitPowerMax, 0) then return true end
+    local powerType = ReadPlayer(UnitPowerType)
+    if not powerType then return true end
     -- Rage builds from empty: keep the portrait visible until it is spent or decays.
-    if powerType == 1 then return UnitPower("player", 1) > 0 end
-    return powerType == 3
-        and UnitPower("player", 3) < UnitPowerMax("player", 3)
+    if powerType == 1 then
+        local rage = ReadPlayer(UnitPower, 1)
+        return not rage or rage > 0
+    end
+    return powerType == 3 and IsBelowMax(UnitPower, UnitPowerMax, 3)
 end
 
 local function IsPlayerCasting()
@@ -218,8 +238,10 @@ local function IsPlayerCasting()
     return IsSecret(channel) or channel ~= nil
 end
 
+local chatShown = true
 local function RestoreUI()
     hidden = false
+    chatShown = true
     for region, alpha in pairs(originalAlpha) do
         if pcall(region.SetAlpha, region, alpha) then originalAlpha[region] = nil end
     end
@@ -258,6 +280,32 @@ end
 local chatVisibleUntil = 0
 local function NeedsChatUI()
     return IsChatting() or GetTime() < chatVisibleUntil
+end
+
+-- Message text may not be mouse-enabled, so test the chat area itself rather
+-- than relying on mouse focus.
+local function IsMouseOverChat()
+    local names = { "GeneralDockManager" }
+    for index = 1, NUM_CHAT_WINDOWS or 10 do
+        for _, suffix in ipairs({ "", "Tab", "EditBox", "ButtonFrame" }) do
+            names[#names + 1] = "ChatFrame" .. index .. suffix
+        end
+    end
+    for _, name in ipairs(names) do
+        local frame = _G[name]
+        if frame and frame.IsMouseOver and frame:IsVisible() and frame:IsMouseOver() then
+            return true
+        end
+    end
+    return false
+end
+
+-- Hovering chat that is already visible keeps it readable, then lets it fade
+-- after the usual delay. Hovering faded chat does not reveal it.
+local function ExtendHoveredChat()
+    if chatShown and IsMouseOverChat() then
+        chatVisibleUntil = math.max(chatVisibleUntil, GetTime() + delay)
+    end
 end
 
 Activity = function()
@@ -319,6 +367,10 @@ Activity = function()
         ApplyCharacterUI()
         return
     end
+    if enabled and hidden and IsJournalOpen() then
+        ApplyJournalUI()
+        return
+    end
     if enabled and hidden and (hidden == "spellbook" or IsSpellbookOpen()) then
         ApplySpellbookUI()
         return
@@ -350,7 +402,7 @@ Activity = function()
         or hidden == "inspect"
         or hidden == "loot" or hidden == "tradeskill" or hidden == "target" or hidden == "chat"
         or hidden == "merchant" or hidden == "trainer" or hidden == "mail" or hidden == "auction"
-        or hidden == "taxi" or hidden == "petition") then
+        or hidden == "taxi" or hidden == "petition" or hidden == "journal") then
         HideUI()
         return
     end
@@ -543,6 +595,10 @@ HideUI = function()
         ApplyCharacterUI()
         return
     end
+    if IsJournalOpen() then
+        ApplyJournalUI()
+        return
+    end
     if IsQuestConversationOpen() then
         ApplyQuestUI()
         return
@@ -556,6 +612,7 @@ HideUI = function()
         return
     end
     hidden = "idle"
+    chatShown = false
     -- Keep UIParent shown so protected action buttons and bindings still work.
     -- Preserve the minimap's parent chain without reparenting Blizzard frames.
     local keepPlayer, playerAncestors = NeedsPlayerFrame(), {}
@@ -656,6 +713,35 @@ local function ApplyStackSplitUI(visibleFrames)
     end
 end
 
+-- Journal menus are unnamed UIParent children anchored to a journal row.
+-- Keep only shown frames whose anchors lead into an open journal.
+local function IsAnchoredInto(frame, roots)
+    if not frame.GetNumPoints then return false end
+    local ok, count = pcall(frame.GetNumPoints, frame)
+    if not ok or type(count) ~= "number" then return false end
+    for index = 1, count do
+        local pointOk, _, relativeTo = pcall(frame.GetPoint, frame, index)
+        local current = pointOk and relativeTo or nil
+        while current do
+            if roots[current] then return true end
+            current = current.GetParent and current:GetParent() or nil
+        end
+    end
+    return false
+end
+local function ApplyJournalPopups(keep)
+    local roots = {}
+    for _, name in ipairs(journalFrames) do
+        local frame = _G[name]
+        if frame and frame:IsShown() then roots[frame] = true end
+    end
+    for _, child in ipairs({ UIParent:GetChildren() }) do
+        if not roots[child] and child:IsShown() and IsAnchoredInto(child, roots) then
+            keep[child] = true
+        end
+    end
+end
+
 local function ApplySelectiveUI(mode)
     if IsEditModeOpen() then
         BeginEditMode()
@@ -681,7 +767,7 @@ local function ApplySelectiveUI(mode)
     ApplyInteractionPopups(visibleFrames, mode)
     local windowMode = mode == "map" or mode == "questlog" or mode == "character" or mode == "inspect"
         or mode == "tradeskill" or mode == "merchant" or mode == "trainer" or mode == "mail"
-        or mode == "auction" or mode == "taxi" or mode == "petition"
+        or mode == "auction" or mode == "taxi" or mode == "petition" or mode == "journal"
     local modeFrames = (windowMode or mode == "target" or mode == "chat") and {}
         or mode == "loot" and { "LootFrame" }
         or mode == "quest" and questFrames
@@ -746,12 +832,15 @@ local function ApplySelectiveUI(mode)
     if mode ~= "loot" and IsCharacterOpen() then
         visibleFrames[#visibleFrames + 1] = "CharacterFrame"
     end
+    if mode ~= "loot" and IsJournalOpen() then
+        for _, name in ipairs(journalFrames) do visibleFrames[#visibleFrames + 1] = name end
+    end
     if mode ~= "loot" and IsInspectOpen() then
         for _, name in ipairs(inspectFrames) do visibleFrames[#visibleFrames + 1] = name end
     end
     if mode ~= "loot" and (windowMode or IsTradeSkillOpen()
         or AreBagsOpen() or IsMapOpen() or IsQuestLogOpen() or IsCharacterOpen()
-        or IsInspectOpen()) then
+        or IsInspectOpen() or IsJournalOpen()) then
         for name in pairs(UIPanelWindows or {}) do
             local frame = _G[name]
             if frame and frame:IsShown() then
@@ -779,7 +868,8 @@ local function ApplySelectiveUI(mode)
     if mode == "chat" and NeedsPlayerFrame() then
         visibleFrames[#visibleFrames + 1] = "PlayerFrame"
     end
-    if NeedsChatUI() then
+    chatShown = NeedsChatUI()
+    if chatShown then
         for index = 1, NUM_CHAT_WINDOWS or 10 do
             for _, suffix in ipairs({ "", "Tab", "EditBox", "ButtonFrame" }) do
                 visibleFrames[#visibleFrames + 1] = "ChatFrame" .. index .. suffix
@@ -805,6 +895,7 @@ local function ApplySelectiveUI(mode)
             visibleFrames[#visibleFrames + 1] = "ContainerFrame" .. index
         end
     end
+    if mode ~= "loot" and IsJournalOpen() then ApplyJournalPopups(keep) end
     for _, name in ipairs(visibleFrames) do
         local region = _G[name]
         if region then
@@ -855,6 +946,7 @@ ApplyMapUI = function() ApplySelectiveUI("map") end
 ApplyQuestLogUI = function() ApplySelectiveUI("questlog") end
 ApplyCharacterUI = function() ApplySelectiveUI("character") end
 ApplyInspectUI = function() ApplySelectiveUI("inspect") end
+ApplyJournalUI = function() ApplySelectiveUI("journal") end
 ApplyLootUI = function() ApplySelectiveUI("loot") end
 ApplyTradeSkillUI = function() ApplySelectiveUI("tradeskill") end
 ApplyTargetUI = function() ApplySelectiveUI("target") end
@@ -1164,6 +1256,28 @@ local function HookInspect()
 end
 HookInspect()
 
+-- The journal is created on first use, often without an event. Hook it as soon
+-- as it exists so it never shows with the idle alpha it inherited from UIParent.
+local hookedJournals = setmetatable({}, { __mode = "k" })
+local function HookJournal()
+    for _, name in ipairs(journalFrames) do
+        local frame = _G[name]
+        if frame and frame.HookScript and not hookedJournals[frame] then
+            hookedJournals[frame] = true
+            frame:HookScript("OnShow", function()
+                if enabled and hidden then
+                    if InCombat() then ApplyCombatUI()
+                    elseif lootOpen then ApplyLootUI() else ApplyJournalUI() end
+                end
+            end)
+            frame:HookScript("OnHide", function()
+                if enabled and hidden == "journal" then Activity() end
+            end)
+        end
+    end
+end
+HookJournal()
+
 local hookedMap
 local function HookMap()
     if not WorldMapFrame or hookedMap == WorldMapFrame then return end
@@ -1241,6 +1355,7 @@ local function IsInteracting()
     -- InspectFrame is load-on-demand and is not a UIPanelWindow in every
     -- Classic client variant.
     if IsInspectOpen() then return true end
+    if IsJournalOpen() then return true end
     if AreBagsOpen() then return true end
     for index = 1, 4 do
         if IsShown("StaticPopup" .. index) then return true end
@@ -1389,6 +1504,7 @@ controller:SetScript("OnEvent", function(_, event, ...)
     HookQuestLog()
     HookCharacter()
     HookInspect()
+    HookJournal()
     HookSpellbook()
     HookEditMode()
     HookLoot()
@@ -1540,6 +1656,15 @@ controller:SetScript("OnEvent", function(_, event, ...)
     end
 end)
 
+-- Frames created without an event are hooked on the update tick. Grouping
+-- this work also keeps OnUpdate under Lua 5.1's 60-upvalue limit.
+local function MaintainTick()
+    ExtendHoveredChat()
+    HookEditMode()
+    HookRecipeAlerts()
+    HookJournal()
+end
+
 local elapsedSinceCheck = 0
 controller:SetScript("OnUpdate", function(_, elapsed)
     if not enabled then
@@ -1549,8 +1674,7 @@ controller:SetScript("OnUpdate", function(_, elapsed)
     elapsedSinceCheck = elapsedSinceCheck + elapsed
     if elapsedSinceCheck < 0.05 then return end
     elapsedSinceCheck = 0
-    HookEditMode()
-    HookRecipeAlerts()
+    MaintainTick()
     if IsEditModeOpen() then
         BeginEditMode()
         ApplyBagButtons()
@@ -1615,6 +1739,10 @@ controller:SetScript("OnUpdate", function(_, elapsed)
         ApplyCharacterUI()
         ApplyBagButtons()
         return
+    elseif hidden and IsJournalOpen() then
+        ApplyJournalUI()
+        ApplyBagButtons()
+        return
     elseif hidden and IsSpellbookOpen() then
         ApplySpellbookUI()
         ApplyBagButtons()
@@ -1643,7 +1771,8 @@ controller:SetScript("OnUpdate", function(_, elapsed)
         or hidden == "questlog" or hidden == "character" or hidden == "inspect"
         or hidden == "loot" or hidden == "tradeskill"
         or hidden == "target" or hidden == "chat" or hidden == "merchant" or hidden == "trainer"
-        or hidden == "mail" or hidden == "auction" or hidden == "taxi" or hidden == "petition" then
+        or hidden == "mail" or hidden == "auction" or hidden == "taxi" or hidden == "petition"
+        or hidden == "journal" then
         HideUI()
         ApplyBagButtons()
         return
