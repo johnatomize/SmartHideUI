@@ -210,25 +210,82 @@ local function ReadPlayer(read, ...)
     if ok and type(value) == "number" and not IsSecret(value) then return value end
 end
 
+-- Returns nil when either value is unreadable.
 local function IsBelowMax(read, readMax, ...)
     local current, maximum = ReadPlayer(read, ...), ReadPlayer(readMax, ...)
-    if not current or not maximum then return true end
+    if not current or not maximum then return nil end
     return current < maximum
 end
 
+-- Secret health can still drive alpha: the client evaluates a step curve on
+-- the health percentage and SetAlpha accepts the secret result. The addon
+-- never reads the value. Full health maps to 0, anything below to baseAlpha.
+local healthCurve, healthCurveAlpha
+local function HealthCurveAvailable()
+    return type(UnitHealthPercent) == "function" and type(C_CurveUtil) == "table"
+        and type(C_CurveUtil.CreateCurve) == "function"
+end
+local function PlayerHealthAlpha(baseAlpha)
+    if not HealthCurveAvailable() then return end
+    if healthCurveAlpha ~= baseAlpha then
+        local ok, curve = pcall(C_CurveUtil.CreateCurve)
+        if not ok or not curve then return end
+        local step = Enum and Enum.LuaCurveType and Enum.LuaCurveType.Step
+        if step and curve.SetType then pcall(curve.SetType, curve, step) end
+        -- The middle point keeps a linear fallback close to a step.
+        if not (pcall(curve.AddPoint, curve, 0, baseAlpha)
+            and pcall(curve.AddPoint, curve, 0.995, baseAlpha)
+            and pcall(curve.AddPoint, curve, 1, 0)) then return end
+        healthCurve, healthCurveAlpha = curve, baseAlpha
+    end
+    local ok, alpha = pcall(UnitHealthPercent, "player", false, healthCurve)
+    -- Only type() is safe on a secret; never compare the result.
+    if ok and type(alpha) ~= "nil" then return alpha end
+end
+
+-- Returns true (keep), false (fade) or "curve" (health-driven alpha).
 local function NeedsPlayerFrame()
     if InCombat() then return true end
-    if IsBelowMax(UnitHealth, UnitHealthMax) then return true end
+    local unknown = false
+    local below = IsBelowMax(UnitHealth, UnitHealthMax)
+    if below then return true elseif below == nil then unknown = true end
     -- Check mana even in shapeshift forms, and energy when it is active.
-    if IsBelowMax(UnitPower, UnitPowerMax, 0) then return true end
+    below = IsBelowMax(UnitPower, UnitPowerMax, 0)
+    if below then return true elseif below == nil then unknown = true end
     local powerType = ReadPlayer(UnitPowerType)
-    if not powerType then return true end
-    -- Rage builds from empty: keep the portrait visible until it is spent or decays.
-    if powerType == 1 then
+    if not powerType then
+        unknown = true
+    elseif powerType == 1 then
+        -- Rage builds from empty: keep the portrait visible until it is spent or decays.
         local rage = ReadPlayer(UnitPower, 1)
-        return not rage or rage > 0
+        if rage == nil then unknown = true elseif rage > 0 then return true end
+    elseif powerType == 3 then
+        below = IsBelowMax(UnitPower, UnitPowerMax, 3)
+        if below then return true elseif below == nil then unknown = true end
     end
-    return powerType == 3 and IsBelowMax(UnitPower, UnitPowerMax, 3)
+    if not unknown then return false end
+    -- Secret values cannot be combined, so health alone decides out of combat.
+    if HealthCurveAvailable() then return "curve" end
+    return true
+end
+
+-- Apply health-driven alpha to the portrait. The base alpha is saved so that
+-- restoring or fading the frame works even though its alpha is now secret.
+local playerBaseAlpha
+local function ApplyPlayerHealthAlpha()
+    local frame = PlayerFrame
+    if not frame then return end
+    local base = originalAlpha[frame]
+    if base == nil then
+        local ok, alpha = pcall(frame.GetAlpha, frame)
+        if ok and type(alpha) == "number" and not IsSecret(alpha) then base = alpha end
+    end
+    base = base or playerBaseAlpha
+    if base == nil then return end
+    playerBaseAlpha = base
+    local alpha = PlayerHealthAlpha(base)
+    if alpha == nil then return end
+    if pcall(frame.SetAlpha, frame, alpha) then originalAlpha[frame] = base end
 end
 
 local function IsPlayerCasting()
@@ -423,7 +480,11 @@ local function FadeAlpha(region)
     if region.IsForbidden and region:IsForbidden() then return end
     if InCombatLockdown() and region.IsProtected and region:IsProtected() then return end
     local ok, alpha = pcall(region.GetAlpha, region)
-    if IsSecret(alpha) then return end
+    if IsSecret(alpha) then
+        -- A secret alpha we applied (health curve) still has a saved original.
+        if originalAlpha[region] ~= nil then pcall(region.SetAlpha, region, 0) end
+        return
+    end
     if not ok or type(alpha) ~= "number" then
         unsupportedAlpha[region] = true
         return
@@ -649,9 +710,13 @@ HideUI = function()
     if PlayerFrame then
         if hookedPlayerFrame ~= PlayerFrame then
             hooksecurefunc(PlayerFrame, "SetAlpha", function(frame, alpha)
-                if not IsSecret(alpha) and alpha ~= 0 and enabled and hidden == "idle"
-                    and not NeedsPlayerFrame() then
-                    frame:SetAlpha(0)
+                if not IsSecret(alpha) and alpha ~= 0 and enabled and hidden == "idle" then
+                    local needs = NeedsPlayerFrame()
+                    if not needs then
+                        frame:SetAlpha(0)
+                    elseif needs == "curve" then
+                        ApplyPlayerHealthAlpha()
+                    end
                 end
             end)
             hookedPlayerFrame = PlayerFrame
@@ -675,6 +740,8 @@ HideUI = function()
         local frame = _G[name]
         if frame then FadeRegion(frame, playerAncestors, keepPlayer, keepAuras) end
     end
+    -- Apply after every traversal has restored the portrait's base alpha.
+    if keepPlayer == "curve" then ApplyPlayerHealthAlpha() end
     hidden = "idle"
 end
 
@@ -936,6 +1003,7 @@ local function ApplySelectiveUI(mode)
     hidden = mode
     for _, child in ipairs({ UIParent:GetChildren() }) do Visit(child) end
     for _, region in ipairs({ UIParent:GetRegions() }) do Visit(region) end
+    if mode == "chat" and NeedsPlayerFrame() == "curve" then ApplyPlayerHealthAlpha() end
 end
 
 ApplyCombatUI = function() ApplySelectiveUI("combat") end
@@ -1802,6 +1870,27 @@ SlashCmdList.SMARTHIDEUI = function(message)
         questTrackerVisibleUntil = 0
         RestoreUI()
         print("SmartHideUI: UI visas och automatisk döljning är av.")
+    elseif command == "debug" then
+        -- Report each NeedsPlayerFrame input without comparing secret values.
+        local function describe(read, ...)
+            local ok, raw = pcall(read, "player", ...)
+            if not ok then return "error" end
+            if IsSecret(raw) then return "secret" end
+            return tostring(raw)
+        end
+        print("SmartHideUI debug: needsPlayer=" .. tostring(NeedsPlayerFrame())
+            .. " combat=" .. tostring(InCombat()) .. " hidden=" .. tostring(hidden))
+        print("  health=" .. describe(UnitHealth) .. "/" .. describe(UnitHealthMax)
+            .. " mana=" .. describe(UnitPower, 0) .. "/" .. describe(UnitPowerMax, 0)
+            .. " powerType=" .. describe(UnitPowerType))
+        print("  rage=" .. describe(UnitPower, 1) .. " energy=" .. describe(UnitPower, 3)
+            .. "/" .. describe(UnitPowerMax, 3) .. " enemyTarget=" .. tostring(HasEnemyTarget()))
+        local curveUtil = _G.C_CurveUtil
+        print("  api: healthPct=" .. type(_G.UnitHealthPercent)
+            .. " powerPct=" .. type(_G.UnitPowerPercent)
+            .. " curveUtil=" .. type(curveUtil)
+            .. " createCurve=" .. type(curveUtil and curveUtil.CreateCurve)
+            .. " healthMissing=" .. type(_G.UnitHealthMissing))
     elseif command == "delay" and tonumber(value) and tonumber(value) >= 0.5 then
         delay = tonumber(value)
         print("SmartHideUI: fördröjning " .. delay .. " sekunder.")

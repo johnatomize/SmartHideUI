@@ -10,15 +10,23 @@ local compatFile = assert(io.open("Compat.lua", "r"))
 local compatSource = compatFile:read("*a")
 compatFile:close()
 
-local function setup(visible, client)
+local function setup(visible, client, options)
     local env = setmetatable({}, { __index = _G })
     env._G = env
     local s = { time = 0, combat = false, binding = "" }
     local methods = {}
-    function methods:GetAlpha() return self.alpha end
+    -- A secret alpha (from a health curve) stays secret when read back.
+    function methods:GetAlpha()
+        if self.alphaSecret then return "SECRET" end
+        return self.alpha
+    end
     function methods:SetAlpha(alpha)
         if self.rejectCombatAlpha and s.combat then error("protected alpha is locked") end
-        self.alpha = alpha
+        if type(alpha) == "table" then
+            self.alpha, self.alphaSecret = alpha.secretValue, true
+        else
+            self.alpha, self.alphaSecret = alpha, nil
+        end
     end
     function methods:GetParent() return self.parent end
     function methods:GetChildren() return unpack(self.children) end
@@ -173,7 +181,26 @@ local function setup(visible, client)
     env.IsAltKeyDown = env.IsShiftKeyDown
     env.GetBindingAction = function() return s.binding end
     env.GetMouseFoci = function() return { env.WorldFrame } end
-    env.issecretvalue = function(value) return value == "SECRET" end
+    env.issecretvalue = function(value)
+        return value == "SECRET" or (type(value) == "table" and value.secretValue ~= nil)
+    end
+    if options and options.curve then
+        -- Forever's secret-safe health API: the curve result is itself secret.
+        env.Enum = { LuaCurveType = { Linear = 0, Step = 1 } }
+        env.C_CurveUtil = { CreateCurve = function()
+            local curve = { points = {} }
+            function curve:SetType(kind) self.kind = kind end
+            function curve:AddPoint(x, y) table.insert(self.points, { x, y }) end
+            return curve
+        end }
+        env.UnitHealthPercent = function(_, _, curve)
+            local percent, value = (s.health or 100) / 100, curve.points[1][2]
+            for _, point in ipairs(curve.points) do
+                if percent >= point[1] then value = point[2] end
+            end
+            return { secretValue = value }
+        end
+    end
     env.wipe = function(t) for key in pairs(t) do t[key] = nil end end
     env.print = function() end
     env.hooksecurefunc = function(object, method, callback)
@@ -1289,6 +1316,40 @@ test("Forever keeps safety UI without comparing secret health", function()
     e.SlashCmdList.SMARTHIDEUI("off")
     assert(e.MainActionBar.alpha == 0.8 and e.BagsBar.alpha == 0.7)
     s.visible()
+end)
+
+test("Forever curve fades the portrait at full secret health", function()
+    local s, e = setup(false, "forever", { curve = true })
+    s.secretHealth = true; s.event("UNIT_HEALTH", "player"); s.hidden()
+    assert(e.PlayerFrame.alpha == 0, "portrait stayed visible at full secret health")
+    s.health = 60; s.event("UNIT_HEALTH", "player"); s.hidden()
+    assert(e.PlayerFrame.alpha == 0.7, "missing secret health did not reveal the portrait")
+    s.tick(); s.hidden()
+    assert(e.PlayerFrame.alpha == 0.7, "portrait flickered on idle ticks")
+    e.PlayerFrame:SetAlpha(1); assert(e.PlayerFrame.alpha == 0.7)
+    s.health = 100; s.tick(); s.hidden()
+    assert(e.PlayerFrame.alpha == 0)
+    s.combat = true; s.event("PLAYER_REGEN_DISABLED"); s.tick(); s.hidden()
+    assert(e.PlayerFrame.alpha == 0.7 and not e.PlayerFrame.alphaSecret)
+    s.combat = false; s.event("PLAYER_REGEN_ENABLED"); s.tick(4); s.hidden()
+    assert(e.PlayerFrame.alpha == 0)
+    s.health = 60; s.tick()
+    e.ContainerFrame1:Show(); s.event("BAG_UPDATE_DELAYED"); s.tick(); s.hidden()
+    assert(e.PlayerFrame.alpha == 0, "bags revealed the portrait")
+    e.ContainerFrame1:Hide(); s.tick(); s.hidden()
+    assert(e.PlayerFrame.alpha == 0.7)
+    e.SlashCmdList.SMARTHIDEUI("off"); s.visible()
+    assert(e.PlayerFrame.alpha == 0.7 and not e.PlayerFrame.alphaSecret)
+end)
+
+test("Forever curve applies in chat mode", function()
+    local s, e = setup(false, "forever", { curve = true })
+    s.secretHealth = true; s.health = 60
+    s.event("CHAT_MSG_SAY"); s.tick(); s.hidden()
+    assert(e.ChatFrame1.alpha == 0.85, "chat was not revealed")
+    assert(e.PlayerFrame.alpha == 0.7)
+    s.health = 100; s.tick(); s.hidden()
+    assert(e.PlayerFrame.alpha == 0, "chat kept the portrait at full health")
 end)
 
 test("Forever bags retain action bar and bag controls", function()
