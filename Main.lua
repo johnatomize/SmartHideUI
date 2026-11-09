@@ -28,6 +28,7 @@ local petitionOpen = false
 local petitionFrames = { "PetitionFrame" }
 local questTrackerRevealDuration = 10
 local questTrackerVisibleUntil = 0
+local recipeAlertFrames = setmetatable({}, { __mode = "k" })
 local function NeedsQuestTrackerUI()
     return GetTime() < questTrackerVisibleUntil
 end
@@ -51,6 +52,15 @@ local extraWindows = { "GameMenuFrame", "SettingsPanel", "InterfaceOptionsFrame"
     "ChatConfigFrame", "StaticPopup1", "StaticPopup2", "StaticPopup3", "StaticPopup4" }
 local menuFrames = { "GameMenuFrame", "SettingsPanel", "InterfaceOptionsFrame",
     "VideoOptionsFrame", "AudioOptionsFrame", "KeyBindingFrame", "AddonList", "HelpFrame" }
+local editModeFrames = { "EditModeManagerFrame", "EditModeSystemSettingsDialog",
+    "EditModeLayoutDialog", "EditModeImportLayoutDialog", "EditModeUnsavedChangesDialog" }
+local function IsEditModeOpen()
+    for _, name in ipairs(editModeFrames) do
+        local frame = _G[name]
+        if frame and frame:IsShown() then return true end
+    end
+    return false
+end
 local function IsMenuOpen()
     for _, name in ipairs(menuFrames) do
         local frame = _G[name]
@@ -69,7 +79,7 @@ local function HasOpenPanel()
     end
     return false
 end
-local HideUI
+local HideUI, Activity
 local function IsQuestLogOpen()
     return AnyShown(compat.questLogFrames)
 end
@@ -216,6 +226,27 @@ local function RestoreUI()
     ApplyBagButtons()
 end
 
+local editModeSessionActive, editModeWasHidden = false, false
+local function BeginEditMode()
+    if not editModeSessionActive then
+        editModeWasHidden = not not hidden
+        editModeSessionActive = true
+    end
+    if enabled then RestoreUI() end
+end
+local function EndEditMode()
+    if IsEditModeOpen() then return end
+    editModeSessionActive = false
+    if not enabled then return end
+    if editModeWasHidden then
+        if InCombat() then ApplyCombatUI()
+        elseif AreBagsOpen() then ApplyBagUI()
+        else HideUI() end
+    else
+        Activity()
+    end
+end
+
 local function IsChatting()
     for index = 1, NUM_CHAT_WINDOWS or 10 do
         local editBox = _G["ChatFrame" .. index .. "EditBox"]
@@ -229,8 +260,12 @@ local function NeedsChatUI()
     return IsChatting() or GetTime() < chatVisibleUntil
 end
 
-local function Activity()
+Activity = function()
     lastActivity = GetTime()
+    if enabled and IsEditModeOpen() then
+        BeginEditMode()
+        return
+    end
     if enabled and InCombat() then
         ApplyCombatUI()
         return
@@ -386,8 +421,8 @@ end
 -- Escape menus override every fade policy, including combat and loot. Preserve
 -- them before OnShow so opening a menu cannot expose an already-faded frame.
 -- Blizzard retains control of Show/Hide and the menu's frame strata.
-local function ApplyMenuUI(keep, ancestors)
-    for _, name in ipairs(menuFrames) do
+local function KeepNamedFrames(keep, ancestors, names)
+    for _, name in ipairs(names) do
         local frame = _G[name]
         if frame then
             keep[frame] = true
@@ -396,6 +431,28 @@ local function ApplyMenuUI(keep, ancestors)
                 ancestors[parent] = true
                 parent = parent:GetParent()
             end
+        end
+    end
+end
+local function ApplyMenuUI(keep, ancestors)
+    KeepNamedFrames(keep, ancestors, menuFrames)
+end
+
+-- Edit Mode's manager and its dialogs are separate UIParent children. Keep
+-- their alpha ready before Blizzard shows them, including from the idle state.
+local function ApplyEditModeFrames(keep, ancestors)
+    KeepNamedFrames(keep, ancestors, editModeFrames)
+end
+
+-- Recipe toasts are unnamed, pooled frames. Keep only their frames and parent
+-- chains; Blizzard remains responsible for showing, animating and hiding them.
+local function ApplyRecipeAlertUI(keep, ancestors)
+    for frame in pairs(recipeAlertFrames) do
+        keep[frame] = true
+        local parent = frame:GetParent()
+        while parent and parent ~= UIParent do
+            ancestors[parent] = true
+            parent = parent:GetParent()
         end
     end
 end
@@ -454,6 +511,10 @@ end
 
 local hookedPlayerFrame
 HideUI = function()
+    if IsEditModeOpen() then
+        BeginEditMode()
+        return
+    end
     if mailOpen then
         ApplyMailUI()
         return
@@ -494,7 +555,6 @@ HideUI = function()
         ApplyChatUI()
         return
     end
-    if hidden == "combat" then RestoreUI() end
     hidden = "idle"
     -- Keep UIParent shown so protected action buttons and bindings still work.
     -- Preserve the minimap's parent chain without reparenting Blizzard frames.
@@ -505,6 +565,8 @@ HideUI = function()
     ApplyCastingUI(keepAuras, playerAncestors)
     ApplyQuestTrackerUI(keepAuras, playerAncestors)
     ApplyMenuUI(keepAuras, playerAncestors)
+    ApplyEditModeFrames(keepAuras, playerAncestors)
+    ApplyRecipeAlertUI(keepAuras, playerAncestors)
     for _, name in ipairs(auraFrames) do
         local frame = _G[name]
         if frame then
@@ -595,13 +657,19 @@ local function ApplyStackSplitUI(visibleFrames)
 end
 
 local function ApplySelectiveUI(mode)
-    if hidden ~= mode then RestoreUI() end
+    if IsEditModeOpen() then
+        BeginEditMode()
+        return
+    end
+    local transitioning = hidden ~= mode
     local keep, ancestors = { [controller] = true }, {}
     ApplyMinimapUI(keep, ancestors)
     ApplyMirrorTimerUI(keep, ancestors)
     ApplyCastingUI(keep, ancestors)
     ApplyQuestTrackerUI(keep, ancestors)
     ApplyMenuUI(keep, ancestors)
+    ApplyEditModeFrames(keep, ancestors)
+    ApplyRecipeAlertUI(keep, ancestors)
     -- All interactions use standard item and comparison tooltips without
     -- rediscovering tooltip frames across the entire UI on every refresh.
     local visibleFrames = { "GameTooltip", "ShoppingTooltip1", "ShoppingTooltip2" }
@@ -748,23 +816,35 @@ local function ApplySelectiveUI(mode)
             end
         end
     end
+    local function RestoreSavedAlpha(region)
+        if originalAlpha[region] ~= nil then
+            if pcall(region.SetAlpha, region, originalAlpha[region]) then
+                originalAlpha[region] = nil
+            end
+        end
+    end
+    local function RestoreSubtree(region)
+        RestoreSavedAlpha(region)
+        for _, child in ipairs({ region:GetChildren() }) do RestoreSubtree(child) end
+        for _, texture in ipairs({ region:GetRegions() }) do RestoreSubtree(texture) end
+    end
     local function Visit(region)
         if keep[region] or ancestors[region] then
-            if originalAlpha[region] ~= nil then
-                if pcall(region.SetAlpha, region, originalAlpha[region]) then
-                    originalAlpha[region] = nil
-                end
+            if keep[region] then
+                if transitioning then RestoreSubtree(region)
+                else RestoreSavedAlpha(region) end
+                return
             end
-            if keep[region] then return end
+            RestoreSavedAlpha(region)
             for _, child in ipairs({ region:GetChildren() }) do Visit(child) end
             for _, texture in ipairs({ region:GetRegions() }) do Visit(texture) end
         else
             FadeAlpha(region)
         end
     end
+    hidden = mode
     for _, child in ipairs({ UIParent:GetChildren() }) do Visit(child) end
     for _, region in ipairs({ UIParent:GetRegions() }) do Visit(region) end
-    hidden = mode
 end
 
 ApplyCombatUI = function() ApplySelectiveUI("combat") end
@@ -973,6 +1053,21 @@ local function HookInteractionPopups()
 end
 HookInteractionPopups()
 
+local hookedRecipeAlertSystem
+local function HookRecipeAlerts()
+    local system = NewRecipeLearnedAlertSystem
+    if not system or system == hookedRecipeAlertSystem
+        or type(system.setUpFunction) ~= "function" then return end
+    hookedRecipeAlertSystem = system
+    hooksecurefunc(system, "setUpFunction", function(frame)
+        recipeAlertFrames[frame] = true
+        if enabled and hidden then
+            if hidden == "idle" then HideUI() else ApplySelectiveUI(hidden) end
+        end
+    end)
+end
+HookRecipeAlerts()
+
 local function TradeSkillClosed()
     if not enabled or not hidden then return end
     -- CLOSE and OnHide can both fire, in either order. Once idle, a second
@@ -1098,6 +1193,21 @@ local function HookSpellbook()
     end
 end
 HookSpellbook()
+
+local hookedEditModeFrames = setmetatable({}, { __mode = "k" })
+local function HookEditMode()
+    for _, name in ipairs(editModeFrames) do
+        local frame = _G[name]
+        if frame and not hookedEditModeFrames[frame] then
+            hookedEditModeFrames[frame] = true
+            frame:HookScript("OnShow", BeginEditMode)
+            frame:HookScript("OnHide", function()
+                if editModeSessionActive then EndEditMode() end
+            end)
+        end
+    end
+end
+HookEditMode()
 
 local gamepadActive = false
 
@@ -1249,6 +1359,7 @@ for _, event in ipairs({
     "QUEST_COMPLETE", "QUEST_GREETING", "QUEST_PROGRESS", "GOSSIP_SHOW",
     "CONFIRM_BINDER",
     "QUEST_WATCH_UPDATE",
+    "NEW_RECIPE_LEARNED",
     "MERCHANT_SHOW", "MERCHANT_CLOSED", "MAIL_SHOW", "MAIL_CLOSED", "PLAYER_EQUIPMENT_CHANGED",
     "TRAINER_SHOW", "TRAINER_CLOSED",
     "AUCTION_HOUSE_SHOW", "AUCTION_HOUSE_CLOSED",
@@ -1279,6 +1390,7 @@ controller:SetScript("OnEvent", function(_, event, ...)
     HookCharacter()
     HookInspect()
     HookSpellbook()
+    HookEditMode()
     HookLoot()
     HookTradeSkills()
     HookInteractionPopups()
@@ -1289,6 +1401,12 @@ controller:SetScript("OnEvent", function(_, event, ...)
     HookTaxi()
     HookPetition()
     HookMail()
+    HookRecipeAlerts()
+    if event == "NEW_RECIPE_LEARNED" then
+        -- Blizzard creates and times the alert. Learning a recipe is not
+        -- general activity and must not restore the rest of the HUD.
+        return
+    end
     if event == "TAXIMAP_OPENED" then
         taxiOpen = true
         if enabled and hidden then Activity() end
@@ -1431,6 +1549,15 @@ controller:SetScript("OnUpdate", function(_, elapsed)
     elapsedSinceCheck = elapsedSinceCheck + elapsed
     if elapsedSinceCheck < 0.05 then return end
     elapsedSinceCheck = 0
+    HookEditMode()
+    HookRecipeAlerts()
+    if IsEditModeOpen() then
+        BeginEditMode()
+        ApplyBagButtons()
+        return
+    elseif editModeSessionActive then
+        EndEditMode()
+    end
     if questTrackerVisibleUntil > 0 and not NeedsQuestTrackerUI() then
         questTrackerVisibleUntil = 0
         if hidden == "idle" then HideUI() end
@@ -1497,7 +1624,6 @@ controller:SetScript("OnUpdate", function(_, elapsed)
         ApplyBagButtons()
         return
     elseif hidden == "quest" then
-        RestoreUI()
         if AreBagsOpen() then ApplyBagUI() else HideUI() end
         ApplyBagButtons()
         return
@@ -1518,7 +1644,6 @@ controller:SetScript("OnUpdate", function(_, elapsed)
         or hidden == "loot" or hidden == "tradeskill"
         or hidden == "target" or hidden == "chat" or hidden == "merchant" or hidden == "trainer"
         or hidden == "mail" or hidden == "auction" or hidden == "taxi" or hidden == "petition" then
-        RestoreUI()
         HideUI()
         ApplyBagButtons()
         return

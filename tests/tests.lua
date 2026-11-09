@@ -89,6 +89,8 @@ local function setup(visible, client)
     frame("CastingBarFrame", env.CastParent, false, 0.75)
     frame("PlayerCastingBarFrame", env.CastParent, false, 0.6)
     frame("CastSibling", env.CastParent)
+    frame("AlertFrame", env.UIParent, true, 0.9)
+    frame("UnrelatedAlert", env.AlertFrame)
     frame("PopupParent", env.UIParent, true, 0.9)
     frame("PopupSibling", env.PopupParent)
     frame("MenuParent", env.UIParent, true, 0.9)
@@ -97,6 +99,14 @@ local function setup(visible, client)
         "VideoOptionsFrame", "AudioOptionsFrame", "KeyBindingFrame", "AddonList",
         "HelpFrame" }) do
         frame(name, env.MenuParent, false, 0.85)
+    end
+    if client == "forever" then
+        frame("EditModeManagerFrame", env.UIParent, false, 0.8)
+        frame("EditModeOptions", env.EditModeManagerFrame, true, 0.9)
+        frame("EditModeSystemSettingsDialog", env.UIParent, false, 0.75)
+        frame("EditModeLayoutDialog", env.UIParent, false, 0.7)
+        frame("EditModeImportLayoutDialog", env.UIParent, false, 0.65)
+        frame("EditModeUnsavedChangesDialog", env.UIParent, false, 0.6)
     end
     for index = 1, 4 do
         local popup = frame("StaticPopup" .. index, env.PopupParent, false, 0.85)
@@ -131,6 +141,7 @@ local function setup(visible, client)
         CharacterFrame = {}, MerchantFrame = {}, ClassTrainerFrame = {}, MailFrame = {},
         AuctionHouseFrame = {}, AuctionFrame = {}, PetitionFrame = {} }
     env.SlashCmdList = {}
+    env.NewRecipeLearnedAlertSystem = { setUpFunction = function() end }
     env.CreateFrame = function(_, name) return frame(name, env.UIParent) end
     env.GetBuildInfo = function()
         return "", "", "", client == "forever" and 16001 or 20506
@@ -397,6 +408,22 @@ test("loot can arrive before cast stop", function()
     s.start("Mining"); s.loot(); s.stop(); s.hidden()
     s.close(); s.event("BAG_UPDATE_DELAYED"); s.hidden()
 end)
+for _, eventFirst in ipairs({ false, true }) do
+    test("looting a corpse never reveals the HUD: close event first=" .. tostring(eventFirst), function()
+        local s, e = setup()
+        local setAlpha, reveals = e.Hud.SetAlpha, 0
+        e.Hud.SetAlpha = function(frame, alpha)
+            if alpha ~= 0 then reveals = reveals + 1 end
+            return setAlpha(frame, alpha)
+        end
+        s.loot(); s.hidden()
+        -- Taking an item can update inventory while the loot window remains open.
+        s.event("BAG_UPDATE_DELAYED"); s.tick(); s.hidden()
+        assert(e.LootFrame.alpha == 1, "loot window faded while taking an item")
+        s.close(eventFirst); s.event("BAG_UPDATE_DELAYED"); s.tick(); s.hidden()
+        assert(reveals == 0, "the HUD was restored during a hidden loot transition")
+    end)
+end
 test("movement cancellation and failed attempts", function()
     local s = setup()
     s.start("Herb Gathering")
@@ -1227,6 +1254,77 @@ test("Forever gamepad movement and panel navigation stay selective", function()
     s.event("GAME_PAD_ACTIVE_CHANGED", false)
 end)
 
+test("Forever edit mode restores the whole UI and its dialogs", function()
+    local s, e = setup(false, "forever")
+    assert(e.EditModeManagerFrame.alpha == 0.8, "edit mode inherited idle fade")
+    e.GameMenuFrame:Show(); s.tick(); s.hidden()
+    e.GameMenuFrame:Hide(); e.EditModeManagerFrame:Show(); s.visible()
+    assert(e.EditModeManagerFrame.alpha == 0.8 and e.EditModeOptions.alpha == 0.9)
+    assert(e.MainActionBar.alpha == 0.8 and e.ChatFrame1.alpha == 0.85,
+        "edit mode did not restore the rest of the HUD")
+    s.key("OnKeyDown", "UNRELATED_BINDING"); s.tick(4); s.visible()
+    assert(e.EditModeManagerFrame.alpha == 0.8, "edit controls faded during use")
+    for _, name in ipairs({ "EditModeSystemSettingsDialog", "EditModeLayoutDialog",
+        "EditModeImportLayoutDialog", "EditModeUnsavedChangesDialog" }) do
+        local dialog = e[name]
+        dialog:Show(); s.tick(); s.visible()
+        assert(dialog.alpha > 0, name .. " was faded")
+        dialog:Hide(); s.tick(); s.visible()
+    end
+    e.EditModeUnsavedChangesDialog:Show()
+    e.EditModeManagerFrame:Hide(); s.tick(); s.visible()
+    assert(e.EditModeUnsavedChangesDialog.alpha == 0.6,
+        "edit mode dialog faded when the manager closed")
+    e.EditModeUnsavedChangesDialog:Hide(); s.tick(); s.hidden()
+    assert(e.EditModeManagerFrame.alpha == 0.8, "closed edit mode lost its saved alpha")
+end)
+
+test("Forever edit mode composes with bags and combat", function()
+    local s, e = setup(false, "forever")
+    e.EditModeManagerFrame:Show(); s.visible()
+    e.ContainerFrame1:Show(); s.tick(); s.visible()
+    assert(e.EditModeManagerFrame.alpha == 0.8 and e.ContainerFrame1.alpha == 1)
+    s.combat = true; s.tick(); s.visible()
+    assert(e.EditModeManagerFrame.alpha == 0.8 and e.MainActionBar.alpha == 0.8)
+    s.combat = false; s.tick(); s.visible()
+    assert(e.EditModeManagerFrame.alpha == 0.8)
+    e.EditModeManagerFrame:Hide(); s.tick(); s.hidden()
+    assert(e.ContainerFrame1.alpha == 1 and e.MainActionBar.alpha == 0.8)
+    e.ContainerFrame1:Hide(); s.tick(); s.hidden()
+end)
+
+test("Forever edit mode preserves visible entry and explicit overrides", function()
+    local s, e = setup(true, "forever")
+    e.EditModeManagerFrame:Show(); s.tick(4); s.visible()
+    assert(e.EditModeManagerFrame.alpha == 0.8)
+    e.EditModeManagerFrame:Hide(); s.tick(); s.visible()
+    for _, command in ipairs({ "off", "show" }) do
+        local hidden, ui = setup(false, "forever")
+        ui.EditModeManagerFrame:Show(); hidden.visible()
+        ui.SlashCmdList.SMARTHIDEUI(command); hidden.tick(4); hidden.visible()
+        assert(ui.EditModeManagerFrame.alpha == 0.8)
+    end
+end)
+
+test("Forever edit mode frame loaded after idle stays visible", function()
+    local s, e = setup(false, "forever")
+    e.EditModeManagerFrame = nil
+    local manager = s.createFrame("EditModeManagerFrame", e.UIParent, false, 0.6)
+    s.event("ADDON_LOADED", "Blizzard_EditMode")
+    manager:Show(); s.visible()
+    assert(manager.alpha == 0.6)
+    manager:Hide(); s.tick(); s.hidden()
+end)
+
+test("Forever edit mode loaded without a load event is detected on update", function()
+    local s, e = setup(false, "forever")
+    e.EditModeManagerFrame = nil
+    local manager = s.createFrame("EditModeManagerFrame", e.UIParent, false, 0.6)
+    manager:Show(); s.tick(); s.visible()
+    assert(manager.alpha == 0.6)
+    manager:Hide(); s.tick(); s.hidden()
+end)
+
 test("Forever late player spells and visible entry restore cleanly", function()
     local s, e = setup(true, "forever")
     e.PlayerSpellsFrame = nil
@@ -1257,6 +1355,47 @@ test("Forever retries protected alpha restoration after combat", function()
     s.combat = false; s.tick()
     assert(e.BagsBar.alpha == 0.7)
     s.visible()
+end)
+
+test("recipe toast keeps its native fade through hidden interactions", function()
+    local s, e = setup()
+    local toast = s.createFrame("RecipeToast", e.AlertFrame, false, 0.8)
+    local child = s.createFrame("RecipeToastIcon", toast)
+    assert(e.AlertFrame.alpha == 0)
+    s.event("NEW_RECIPE_LEARNED", 123)
+    e.NewRecipeLearnedAlertSystem.setUpFunction(toast, 123)
+    toast:Show(); s.tick(); s.hidden()
+    assert(e.AlertFrame.alpha == 0.9 and toast.alpha == 0.8 and child.alpha == 1)
+    assert(e.UnrelatedAlert.alpha == 0 and e.Hud.alpha == 0)
+    toast:SetAlpha(0.4); s.tick(); s.hidden()
+    assert(toast.alpha == 0.4, "Blizzard's toast fade was overwritten")
+    e.TradeSkillFrame:Show(); s.tick(); s.hidden()
+    assert(toast.alpha == 0.4 and e.TradeSkillFrame.alpha == 1)
+    assert(e.UnrelatedAlert.alpha == 0 and e.Hud.alpha == 0)
+    s.combat = true; s.event("PLAYER_REGEN_DISABLED"); s.tick(); s.hidden()
+    assert(toast.alpha == 0.4 and e.ActionButton1.alpha == 0.8)
+    s.combat = false; s.event("PLAYER_REGEN_ENABLED"); s.tick(); s.hidden()
+    toast:Hide(); e.TradeSkillFrame:Hide(); s.tick(); s.hidden()
+    assert(not toast.shown and e.Hud.alpha == 0)
+    toast:SetAlpha(0.8)
+    e.NewRecipeLearnedAlertSystem.setUpFunction(toast, 456)
+    toast:Show(); s.tick(); s.hidden()
+    assert(toast.alpha == 0.8 and e.AlertFrame.alpha == 0.9)
+    e.SlashCmdList.SMARTHIDEUI("off"); s.visible()
+    assert(e.AlertFrame.alpha == 0.9 and e.UnrelatedAlert.alpha == 1)
+end)
+
+test("recipe toast preserves an already visible UI", function()
+    local s, e = setup(true)
+    local toast = s.createFrame("RecipeToast", e.AlertFrame, false, 0.8)
+    s.event("NEW_RECIPE_LEARNED", 123)
+    e.NewRecipeLearnedAlertSystem.setUpFunction(toast, 123)
+    toast:Show(); s.tick(); s.visible()
+    assert(toast.alpha == 0.8 and e.Hud.alpha == 0.65)
+    s.tick(4); s.hidden()
+    assert(toast.alpha == 0.8 and e.AlertFrame.alpha == 0.9 and e.Hud.alpha == 0)
+    e.SlashCmdList.SMARTHIDEUI("show"); s.tick(4); s.visible()
+    assert(toast.alpha == 0.8 and e.Hud.alpha == 0.65)
 end)
 
 for _, failure in ipairs(failures) do print("FAIL " .. failure) end
