@@ -983,8 +983,10 @@ local function ApplySelectiveUI(mode)
     end
     local function RestoreSubtree(region)
         RestoreSavedAlpha(region)
+        -- Textures and FontStrings have no children or regions of their own.
+        if not region.GetChildren then return end
         for _, child in ipairs({ region:GetChildren() }) do RestoreSubtree(child) end
-        for _, texture in ipairs({ region:GetRegions() }) do RestoreSubtree(texture) end
+        for _, texture in ipairs({ region:GetRegions() }) do RestoreSavedAlpha(texture) end
     end
     local function Visit(region)
         if keep[region] or ancestors[region] then
