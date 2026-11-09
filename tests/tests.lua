@@ -1624,6 +1624,34 @@ test("selecting a target from hidden UI restores textured target frame", functio
     assert(e.TargetFrame.alpha == 0 and e.TargetFrameTexture.alpha == 0.8)
 end)
 
+-- Issue #3: store and secure frames are forbidden to addon code. Every method
+-- except IsForbidden throws, so traversals must skip them before touching them.
+test("forbidden UIParent children are skipped while the journal is open", function()
+    local s, e = setup(false, "forever")
+    local forbidden = s.createFrame("CatalogShopFrame", e.UIParent, true, 0.9)
+    local function deny() error("Attempt to access forbidden object from code tainted by an AddOn") end
+    for _, method in ipairs({ "IsShown", "IsVisible", "GetAlpha", "SetAlpha", "GetParent",
+        "GetChildren", "GetRegions", "GetNumPoints", "GetPoint", "IsProtected",
+        "IsMouseOver", "IsObjectType" }) do
+        forbidden[method] = deny
+    end
+    forbidden.IsForbidden = function() return true end
+    -- An ordinary popup anchored to the forbidden frame must not walk into it.
+    local popup = s.createFrame("AnchoredToForbidden", e.UIParent, true, 0.8)
+    popup.anchor = forbidden
+    local journal = s.createFrame("ChronicleJournalFrame", e.UIParent, false, 0.95)
+    local row = s.createFrame("ChronicleZoneRow", journal)
+    local menu = s.createFrame("ChronicleZoneMenu", e.UIParent, false, 0.97)
+    menu.anchor = row
+    journal:Show(); s.tick(); s.hidden()
+    menu:Show(); s.tick(); s.hidden()
+    assert(journal.alpha == 0.95 and menu.alpha == 0.97, "journal or its menu was faded")
+    assert(popup.alpha == 0 and e.MainActionBar.alpha == 0, "unrelated UI was revealed")
+    journal:Hide(); menu:Hide(); s.tick(); s.hidden()
+    e.SlashCmdList.SMARTHIDEUI("off"); s.visible()
+    assert(popup.alpha == 0.8)
+end)
+
 for _, failure in ipairs(failures) do print("FAIL " .. failure) end
 print(string.format("%d/%d regression checks passed", count - #failures, count))
 assert(#failures == 0, "regression checks failed")

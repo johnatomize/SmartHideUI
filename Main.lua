@@ -470,6 +470,12 @@ Activity = function()
     if hidden then RestoreUI() end
 end
 
+-- Store and secure frames are forbidden to addon code: every method except
+-- IsForbidden throws. Check this before calling anything on a traversed frame.
+local function IsForbidden(region)
+    return region.IsForbidden ~= nil and region:IsForbidden()
+end
+
 -- Some UIParent children expose alpha methods but reject calls on their native
 -- object. Probe once, then skip them instead of aborting every update tick.
 local function FadeAlpha(region)
@@ -477,7 +483,7 @@ local function FadeAlpha(region)
     -- Never save or overwrite their animated alpha on an update tick.
     if region == ZoneTextFrame or region == SubZoneTextFrame then return end
     if unsupportedAlpha[region] then return end
-    if region.IsForbidden and region:IsForbidden() then return end
+    if IsForbidden(region) then return end
     if InCombatLockdown() and region.IsProtected and region:IsProtected() then return end
     local ok, alpha = pcall(region.GetAlpha, region)
     if IsSecret(alpha) then
@@ -791,6 +797,8 @@ local function IsAnchoredInto(frame, roots)
         local current = pointOk and relativeTo or nil
         while current do
             if roots[current] then return true end
+            -- A journal never sits inside a forbidden frame; stop walking here.
+            if IsForbidden(current) then break end
             current = current.GetParent and current:GetParent() or nil
         end
     end
@@ -803,7 +811,8 @@ local function ApplyJournalPopups(keep)
         if frame and frame:IsShown() then roots[frame] = true end
     end
     for _, child in ipairs({ UIParent:GetChildren() }) do
-        if not roots[child] and child:IsShown() and IsAnchoredInto(child, roots) then
+        if not roots[child] and not IsForbidden(child) and child:IsShown()
+            and IsAnchoredInto(child, roots) then
             keep[child] = true
         end
     end
@@ -984,7 +993,7 @@ local function ApplySelectiveUI(mode)
     local function RestoreSubtree(region)
         RestoreSavedAlpha(region)
         -- Textures and FontStrings have no children or regions of their own.
-        if not region.GetChildren then return end
+        if not region.GetChildren or IsForbidden(region) then return end
         for _, child in ipairs({ region:GetChildren() }) do RestoreSubtree(child) end
         for _, texture in ipairs({ region:GetRegions() }) do RestoreSavedAlpha(texture) end
     end
