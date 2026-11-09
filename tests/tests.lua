@@ -1514,7 +1514,7 @@ test("Forever Chronicle journal stays open without revealing the HUD", function(
     -- Chronicle creates its journal on first use, after the UI is already idle.
     local journal = s.createFrame("ChronicleJournalFrame", e.UIParent, false, 0.95)
     local row = s.createFrame("ChronicleZoneRow", journal)
-    local menu = s.createFrame("ChronicleZoneMenu", e.UIParent, false, 0.97)
+    local menu = s.createFrame("UnnamedJournalMenu", e.UIParent, false, 0.97)
     menu.anchor = row
     local stray = s.createFrame("UnrelatedAddonPopup", e.UIParent, true, 0.9)
     journal:Show(); s.tick(); s.hidden()
@@ -1641,7 +1641,7 @@ test("forbidden UIParent children are skipped while the journal is open", functi
     popup.anchor = forbidden
     local journal = s.createFrame("ChronicleJournalFrame", e.UIParent, false, 0.95)
     local row = s.createFrame("ChronicleZoneRow", journal)
-    local menu = s.createFrame("ChronicleZoneMenu", e.UIParent, false, 0.97)
+    local menu = s.createFrame("UnnamedJournalMenu", e.UIParent, false, 0.97)
     menu.anchor = row
     journal:Show(); s.tick(); s.hidden()
     menu:Show(); s.tick(); s.hidden()
@@ -1650,6 +1650,76 @@ test("forbidden UIParent children are skipped while the journal is open", functi
     journal:Hide(); menu:Hide(); s.tick(); s.hidden()
     e.SlashCmdList.SMARTHIDEUI("off"); s.visible()
     assert(popup.alpha == 0.8)
+end)
+
+-- Issue #8: every Chronicle popup stays visible while shown; Chronicle owns
+-- when it shows and hides (clicks and its own auto-hide timers).
+local chroniclePopups = { "ChronicleReminderToast", "ChronicleTalkingHead",
+    "ChronicleReasonsList", "ChronicleShareFrame", "ChronicleShareNudge",
+    "ChronicleTourBubble", "ChronicleZoneMenu" }
+for _, name in ipairs(chroniclePopups) do
+    test("Chronicle popup " .. name .. " stays visible while the UI is hidden", function()
+        local s, e = setup(false, "forever")
+        -- Chronicle creates its popups on first use, after the UI is already idle.
+        local popup = s.createFrame(name, e.UIParent, false, 0.92)
+        local stray = s.createFrame("UnrelatedAddonPopup", e.UIParent, true, 0.9)
+        popup:Show(); s.tick(); s.hidden()
+        assert(popup.alpha == 0.92, "popup was faded")
+        assert(stray.alpha == 0 and e.MainActionBar.alpha == 0 and e.PlayerFrame.alpha == 0,
+            "popup revealed unrelated UI")
+        s.tick(10); s.tick(10); s.hidden()
+        assert(popup.alpha == 0.92, "popup faded while still shown")
+        popup:Hide(); s.tick(); s.hidden()
+        popup:Show(); s.hidden()
+        assert(popup.alpha == 0.92, "reshown popup flashed in faded")
+    end)
+end
+
+test("Chronicle popups stay visible through bags and combat", function()
+    local s, e = setup(false, "forever")
+    local toast = s.createFrame("ChronicleReminderToast", e.UIParent, true, 0.92)
+    local head = s.createFrame("ChronicleTalkingHead", e.UIParent, true, 0.95)
+    s.tick(); s.hidden()
+    e.ContainerFrame1:Show(); s.event("BAG_UPDATE_DELAYED"); s.tick(); s.hidden()
+    assert(toast.alpha == 0.92 and head.alpha == 0.95 and e.ContainerFrame1.alpha == 1)
+    e.ContainerFrame1:Hide(); s.tick(); s.hidden()
+    s.combat = true; s.event("PLAYER_REGEN_DISABLED"); s.tick(); s.hidden()
+    assert(toast.alpha == 0.92 and head.alpha == 0.95 and e.MainActionBar.alpha == 0.8)
+    s.combat = false; s.event("PLAYER_REGEN_ENABLED"); s.tick(); s.hidden()
+    assert(toast.alpha == 0.92 and head.alpha == 0.95 and e.MainActionBar.alpha == 0)
+    toast:Hide(); head:Hide(); s.tick(); s.hidden()
+    e.SlashCmdList.SMARTHIDEUI("off"); s.visible()
+    assert(toast.alpha == 0.92 and head.alpha == 0.95)
+end)
+
+test("Chronicle popups preserve visible entry and overrides", function()
+    local s, e = setup(true, "forever")
+    local toast = s.createFrame("ChronicleReminderToast", e.UIParent, true, 0.92)
+    s.tick(); s.visible()
+    assert(toast.alpha == 0.92)
+    s.tick(4); s.hidden()
+    assert(toast.alpha == 0.92, "popup faded with the HUD")
+    e.SlashCmdList.SMARTHIDEUI("show"); s.visible()
+    assert(toast.alpha == 0.92)
+end)
+
+-- The share window focuses its text so it can be copied. That focus is not
+-- activity that needs the rest of the UI; focus anywhere else still is.
+test("focus in the Chronicle share window does not reveal the HUD", function()
+    local s, e = setup(false, "forever")
+    local share = s.createFrame("ChronicleShareFrame", e.UIParent, false, 0.97)
+    local scroll = s.createFrame("ChronicleShareScroll", share)
+    local edit = s.createFrame("ChronicleShareEdit", scroll)
+    local other = s.createFrame("OtherAddonEditBox", e.UIParent, true, 0.9)
+    share:Show(); e.GetCurrentKeyBoardFocus = function() return edit end
+    s.tick(); s.hidden()
+    s.tick(10); s.hidden()
+    assert(share.alpha == 0.97 and e.MainActionBar.alpha == 0 and other.alpha == 0)
+    e.GetCurrentKeyBoardFocus = function() return other end
+    s.tick(); s.visible()
+    e.GetCurrentKeyBoardFocus = nil
+    s.tick(4); s.hidden()
+    assert(share.alpha == 0.97)
 end)
 
 for _, failure in ipairs(failures) do print("FAIL " .. failure) end
