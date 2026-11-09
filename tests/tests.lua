@@ -47,6 +47,8 @@ local function setup(visible, client, options)
     function methods:RegisterEvent(event) self.events[event] = true end
     function methods:RegisterUnitEvent(event) self.events[event] = true end
     function methods:SetScript(event, callback) self.scripts[event] = callback end
+    function methods:GetScript(event) return self.scripts[event] end
+    function methods:GetName() return self.name end
     function methods:HookScript(event, callback)
         self.hooks[event] = self.hooks[event] or {}
         table.insert(self.hooks[event], callback)
@@ -58,7 +60,7 @@ local function setup(visible, client, options)
     function methods:Show() self.shown = true; self:Fire("OnShow") end
     function methods:Hide() self.shown = false; self:Fire("OnHide") end
     local function frame(name, parent, shown, alpha, kind)
-        local f = setmetatable({ parent = parent, shown = shown ~= false,
+        local f = setmetatable({ name = name, parent = parent, shown = shown ~= false,
             alpha = alpha or 1, kind = kind or "Frame", children = {}, regions = {},
             scripts = {}, hooks = {}, events = {} }, { __index = methods })
         if parent then table.insert(parent.children, f) end
@@ -473,6 +475,32 @@ for _, eventFirst in ipairs({ false, true }) do
         assert(e.LootFrame.alpha == 1, "loot window faded while taking an item")
         s.close(eventFirst); s.event("BAG_UPDATE_DELAYED"); s.tick(); s.hidden()
         assert(reveals == 0, "the HUD was restored during a hidden loot transition")
+    end)
+end
+-- Issue #7: Forever shows LootFrame before LOOT_OPENED and sends LOOT_CLOSED
+-- about 0.1 s before LootFrame hides, with the cursor still on a loot button.
+-- The mouse focus may also still report that button for a tick after it hides.
+for _, staleFocus in ipairs({ false, true }) do
+    test("loot closing before its window hides keeps the HUD hidden: stale focus="
+        .. tostring(staleFocus), function()
+        local s, e = setup()
+        local button = s.createFrame("LootButton1", e.LootFrame)
+        local setAlpha, reveals = e.Hud.SetAlpha, 0
+        e.Hud.SetAlpha = function(frame, alpha)
+            if alpha ~= 0 then reveals = reveals + 1 end
+            return setAlpha(frame, alpha)
+        end
+        e.LootFrame:Show(); s.event("LOOT_OPENED"); s.tick(); s.hidden()
+        e.GetMouseFoci = function() return { button } end
+        s.tick(); s.hidden()
+        s.event("LOOT_CLOSED"); s.tick(); s.tick(); s.hidden()
+        assert(e.LootFrame.alpha == 1, "loot window faded before it closed")
+        e.LootFrame:Hide()
+        if not staleFocus then e.GetMouseFoci = function() return { e.WorldFrame } end end
+        s.tick(); s.hidden()
+        e.GetMouseFoci = function() return { e.WorldFrame } end
+        s.event("LOOT_CLOSED"); s.tick(); s.tick(4); s.hidden()
+        assert(reveals == 0, "the HUD was restored after looting")
     end)
 end
 test("movement cancellation and failed attempts", function()
@@ -1720,6 +1748,39 @@ test("focus in the Chronicle share window does not reveal the HUD", function()
     e.GetCurrentKeyBoardFocus = nil
     s.tick(4); s.hidden()
     assert(share.alpha == 0.97)
+end)
+
+-- Issue #7 diagnostics: /shu trace logs loot, casts and mode changes without
+-- changing what is shown, and stays silent while off.
+test("/shu trace prints loot, cast and mode lines only while on", function()
+    local s, e = setup()
+    local lines = {}
+    e.print = function(text) lines[#lines + 1] = text end
+    s.start("Skinning"); s.stop(); s.loot(); s.close()
+    assert(#lines == 0, "traced while off")
+    e.SlashCmdList.SMARTHIDEUI("trace")
+    assert(lines[#lines]:find("på", 1, true), "trace was not turned on")
+    s.tick(4); s.hidden()
+    local first = #lines + 1
+    s.start("Skinning"); s.loot(); s.stop(); s.close(); s.hidden()
+    local log = table.concat(lines, "\n", first)
+    for _, expected in ipairs({ "UNIT_SPELLCAST_START m=idle loot=0 cast=1 tgt=0",
+        "LOOT_OPENED m=idle loot=0", "idle>loot by LOOT_OPENED", "LootFrame show m=loot loot=1",
+        "LootFrame hide m=loot loot=1", "loot>idle by LootFrame hide", "LOOT_CLOSED m=idle loot=0" }) do
+        assert(log:find(expected, 1, true), "missing trace: " .. expected .. "\n" .. log)
+    end
+    -- Restores name their cause: a key and its binding, or the tick's foci.
+    first = #lines + 1
+    s.key("OnKeyDown", "UNRELATED_BINDING"); s.visible()
+    s.key("OnKeyUp", "UNRELATED_BINDING"); s.tick(4); s.hidden()
+    log = table.concat(lines, "\n", first)
+    assert(log:find("idle>shown by OnKeyDown TESTKEY=UNRELATED_BINDING", 1, true), "key restore:\n" .. log)
+    assert(log:find("shown>idle by tick mf=WorldFrame kb=- mo=0", 1, true), "tick change:\n" .. log)
+    e.SlashCmdList.SMARTHIDEUI("trace")
+    assert(lines[#lines]:find("av", 1, true), "trace was not turned off")
+    local before = #lines
+    s.tick(4); s.start("Skinning"); s.stop(); s.loot(); s.close(); s.hidden()
+    assert(#lines == before, "traced after turning off")
 end)
 
 for _, failure in ipairs(failures) do print("FAIL " .. failure) end
