@@ -303,6 +303,23 @@ local function IsPlayerCasting()
     return IsSecret(channel) or channel ~= nil
 end
 
+-- /shu trace prints one short line per loot, cast and target event and per
+-- mode change. Chat can't be copied on Forever, so lines are typed back by
+-- hand: keep them brief. Off by default and until the next /reload.
+local trace = { on = false, mode = false }
+function trace.Line(what)
+    if not trace.on then return end
+    print(string.format("SHU %.1f %s m=%s loot=%d cast=%d tgt=%d", GetTime() % 100, what,
+        tostring(hidden or "shown"), lootOpen and 1 or 0, IsPlayerCasting() and 1 or 0,
+        HasPortraitTarget() and 1 or 0))
+end
+function trace.Mode(source)
+    if hidden == trace.mode then return end
+    local from = trace.mode
+    trace.mode = hidden
+    trace.Line(tostring(from or "shown") .. ">" .. tostring(hidden or "shown") .. " by " .. source)
+end
+
 local chatShown = true
 local function RestoreUI()
     hidden = false
@@ -1283,13 +1300,17 @@ local function HookLoot()
     if not LootFrame or hookedLoot == LootFrame then return end
     hookedLoot = LootFrame
     LootFrame:HookScript("OnShow", function()
+        trace.Line("LootFrame show")
         lootOpen = true
         Activity()
+        trace.Mode("LootFrame show")
     end)
     LootFrame:HookScript("OnHide", function()
+        trace.Line("LootFrame hide")
         if not lootOpen then return end
         lootOpen = false
         Activity()
+        trace.Mode("LootFrame hide")
     end)
 end
 HookLoot()
@@ -1479,7 +1500,11 @@ local function IsInteracting()
     local foci = GetMouseFoci and GetMouseFoci()
         or (GetMouseFocus and { GetMouseFocus() }) or {}
     for _, focus in ipairs(foci) do
-        local current, passiveHover = focus, false
+        -- A frame that just hid (a loot button) can stay the reported focus
+        -- for a tick; it isn't hovered. Forbidden frames can't be inspected.
+        local forbidden = IsForbidden(focus)
+        local hovering = forbidden or not focus.IsVisible or focus:IsVisible()
+        local current, passiveHover = not forbidden and hovering and focus or nil, not hovering
         while current do
             -- The always-visible minimap and its pins only need their tooltip.
             -- Check descendants too, without excluding unrelated UIParent children.
@@ -1736,6 +1761,9 @@ controller:SetScript("OnEvent", function(_, event, ...)
     if event == "LOOT_OPENED" then lootOpen = true end
     -- OnHide and LOOT_CLOSED may both fire, in either order.
     if event == "LOOT_CLOSED" and not lootOpen then return end
+    -- Forever sends LOOT_CLOSED shortly before LootFrame hides. Loot stays open
+    -- until OnHide, so the cursor still on a loot button is not idle activity.
+    if event == "LOOT_CLOSED" and LootFrame and LootFrame:IsShown() then return end
     if event == "LOOT_CLOSED" or event == "PLAYER_LEAVING_WORLD" then lootOpen = false end
     -- Manual deselection and automatic target loss on death are not activity.
     if event == "PLAYER_TARGET_CHANGED" then
@@ -1913,6 +1941,10 @@ SlashCmdList.SMARTHIDEUI = function(message)
         questTrackerVisibleUntil = 0
         RestoreUI()
         print("SmartHideUI: UI visas och automatisk döljning är av.")
+    elseif command == "trace" then
+        trace.on = not trace.on
+        trace.mode = hidden
+        print("SmartHideUI: spårning " .. (trace.on and "på" or "av") .. ".")
     elseif command == "debug" then
         -- Report each NeedsPlayerFrame input without comparing secret values.
         local function describe(read, ...)
@@ -1939,5 +1971,45 @@ SlashCmdList.SMARTHIDEUI = function(message)
         print("SmartHideUI: fördröjning " .. delay .. " sekunder.")
     else
         print("SmartHideUI: /shu on, /shu off, /shu show, /shu delay 3. Inställningar gäller till nästa /reload.")
+    end
+end
+
+-- Wrap the handlers instead of threading trace calls through every return.
+-- Scoped in a block so the main chunk stays under Lua 5.1's local limit.
+do
+    local tracedEvents = { LOOT_OPENED = true, LOOT_CLOSED = true, PLAYER_TARGET_CHANGED = true }
+    local onEvent, onUpdate = controller:GetScript("OnEvent"), controller:GetScript("OnUpdate")
+    controller:SetScript("OnEvent", function(self, event, ...)
+        if trace.on and (tracedEvents[event] or event:match("^UNIT_SPELLCAST_")) then
+            trace.Line(event)
+        end
+        onEvent(self, event, ...)
+        if trace.on then trace.Mode(event) end
+    end)
+    -- A tick changes mode through IsInteracting: name what the mouse and
+    -- keyboard are on, so the line says why.
+    local function Name(frame)
+        if not frame then return "-" end
+        if IsForbidden(frame) then return "forbidden" end
+        return frame.GetName and frame:GetName() or "unnamed"
+    end
+    controller:SetScript("OnUpdate", function(self, elapsed)
+        onUpdate(self, elapsed)
+        if trace.on and hidden ~= trace.mode then
+            local foci = GetMouseFoci and GetMouseFoci()
+                or (GetMouseFocus and { GetMouseFocus() }) or {}
+            trace.Mode("tick mf=" .. Name(foci[1])
+                .. " kb=" .. Name(GetCurrentKeyBoardFocus and GetCurrentKeyBoardFocus())
+                .. " mo=" .. (UnitExists("mouseover") and 1 or 0))
+        end
+    end)
+    for _, edge in ipairs({ "OnKeyDown", "OnKeyUp" }) do
+        local onKey = controller:GetScript(edge)
+        controller:SetScript(edge, function(self, key)
+            onKey(self, key)
+            if trace.on and hidden ~= trace.mode then
+                trace.Mode(edge .. " " .. tostring(key) .. "=" .. tostring(GetBindingAction(key)))
+            end
+        end)
     end
 end
