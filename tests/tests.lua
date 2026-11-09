@@ -65,6 +65,23 @@ local function setup(visible, client, options)
         env[name] = f
         return f
     end
+    -- Textures and FontStrings are regions: they have no GetChildren/GetRegions,
+    -- scripts or keyboard handling, so recursing into them must not assume those.
+    local regionMethods = {}
+    for _, key in ipairs({ "GetAlpha", "SetAlpha", "GetParent", "IsShown", "IsVisible",
+        "IsMouseOver", "GetNumPoints", "GetPoint", "IsProtected", "IsObjectType",
+        "IsForbidden" }) do
+        regionMethods[key] = methods[key]
+    end
+    function regionMethods:Show() self.shown = true end
+    function regionMethods:Hide() self.shown = false end
+    local function texture(name, parent, alpha)
+        local t = setmetatable({ parent = parent, shown = true, alpha = alpha or 1,
+            kind = "Texture" }, { __index = regionMethods })
+        table.insert(parent.regions, t)
+        env[name] = t
+        return t
+    end
     frame("UIParent")
     frame("WorldFrame")
     frame("MinimapParent", env.UIParent, true, 0.9)
@@ -78,6 +95,11 @@ local function setup(visible, client, options)
     frame("ChatFrame1Tab", env.UIParent)
     frame("ChatFrame1ButtonFrame", env.UIParent)
     frame("GeneralDockManager", env.UIParent)
+    -- NineSlice borders put textures both directly on chat frames and on nested children.
+    texture("ChatFrame1BorderTexture", env.ChatFrame1, 0.5)
+    frame("ChatFrame1Background", env.ChatFrame1, true, 0.95)
+    texture("ChatFrame1BackgroundTexture", env.ChatFrame1Background, 0.6)
+    texture("ChatFrame1EditBoxTexture", env.ChatFrame1EditBox, 0.7)
     frame("Hud", env.UIParent, true, 0.65)
     frame("ZoneTextFrame", env.UIParent, false, 0)
     frame("SubZoneTextFrame", env.UIParent, false, 0)
@@ -91,6 +113,7 @@ local function setup(visible, client, options)
     frame("CharacterMicroButton", env.MainMenuBar)
     frame("PlayerFrame", env.UIParent, true, 0.7)
     frame("TargetFrame", env.UIParent, true, 0.9)
+    texture("TargetFrameTexture", env.TargetFrame, 0.8)
     frame("MainMenuBarBackpackButton", env.MainMenuBar)
     if client == "forever" then
         frame("MainActionBar", env.UIParent, true, 0.8)
@@ -1569,6 +1592,36 @@ test("recipe toast preserves an already visible UI", function()
     assert(toast.alpha == 0.8 and e.AlertFrame.alpha == 0.9 and e.Hud.alpha == 0)
     e.SlashCmdList.SMARTHIDEUI("show"); s.tick(4); s.visible()
     assert(toast.alpha == 0.8 and e.Hud.alpha == 0.65)
+end)
+
+-- Issue #2: restoring a kept frame's subtree recursed into its Textures.
+for _, client in ipairs({ "classic", "forever" }) do
+    test(client .. " opening chat from hidden UI restores textured chat frames", function()
+        local s, e = setup(false, client)
+        s.key("OnKeyDown", "OPENCHAT")
+        e.ChatFrame1EditBox:Show()
+        e.ChatFrame1EditBox.focused = true
+        e.ChatFrame1EditBox:Fire("OnEditFocusGained"); s.hidden()
+        assert(e.ChatFrame1.alpha == 0.85 and e.ChatFrame1Background.alpha == 0.95)
+        assert(e.ChatFrame1BorderTexture.alpha == 0.5)
+        assert(e.ChatFrame1BackgroundTexture.alpha == 0.6)
+        assert(e.ChatFrame1EditBoxTexture.alpha == 0.7)
+        s.key("OnKeyUp", "OPENCHAT")
+        e.ChatFrame1EditBox.focused = false
+        e.ChatFrame1EditBox:Fire("OnEditFocusLost")
+        e.ChatFrame1EditBox:Hide()
+        s.tick(4); s.hidden()
+        assert(e.ChatFrame1.alpha == 0 and e.ChatFrame1BorderTexture.alpha == 0.5)
+    end)
+end
+
+-- Issue #4: selecting a target switches modes and restores the textured TargetFrame.
+test("selecting a target from hidden UI restores textured target frame", function()
+    local s, e = setup()
+    s.target = true; s.event("PLAYER_TARGET_CHANGED"); s.hidden()
+    assert(e.TargetFrame.alpha == 0.9 and e.TargetFrameTexture.alpha == 0.8)
+    s.target = false; s.event("PLAYER_TARGET_CHANGED"); s.hidden()
+    assert(e.TargetFrame.alpha == 0 and e.TargetFrameTexture.alpha == 0.8)
 end)
 
 for _, failure in ipairs(failures) do print("FAIL " .. failure) end
