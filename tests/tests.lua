@@ -27,6 +27,9 @@ local function setup(visible, client)
     function methods:IsVisible()
         return self.shown and (not self.parent or self.parent:IsVisible())
     end
+    function methods:IsMouseOver() return self.mouseOver or false end
+    function methods:GetNumPoints() return self.anchor and 1 or 0 end
+    function methods:GetPoint() return "TOPLEFT", self.anchor, "BOTTOMLEFT", 0, 0 end
     function methods:IsProtected() return self.protected or false end
     function methods:IsObjectType(kind) return self.kind == kind end
     function methods:IsForbidden() return false end
@@ -149,13 +152,11 @@ local function setup(visible, client)
     env.GetTime = function() return s.time end
     env.InCombatLockdown = function() return s.combat end
     env.UnitAffectingCombat = env.InCombatLockdown
-    env.UnitHealth = function()
-        if client == "forever" then error("secret health was read") end
-        return 100
-    end
-    env.UnitHealthMax = env.UnitHealth
-    env.UnitPower = env.UnitHealth
-    env.UnitPowerMax = env.UnitHealth
+    -- Forever can return secret values; comparing "SECRET" with a number errors.
+    env.UnitHealth = function() return s.secretHealth and "SECRET" or (s.health or 100) end
+    env.UnitHealthMax = function() return s.secretHealth and "SECRET" or 100 end
+    env.UnitPower = function() return 100 end
+    env.UnitPowerMax = env.UnitPower
     env.UnitPowerType = function() return 0 end
     env.UnitDebuff = function()
         if client == "forever" then error("restricted aura was read") end
@@ -806,6 +807,45 @@ test("chat composes with bags, quest conversation, target, loot and combat", fun
     assert(e.TargetFrame.alpha == 0.9)
 end)
 
+test("hovering revealed chat keeps it visible, then fades after the delay", function()
+    local s, e = setup()
+    s.event("CHAT_MSG_WHISPER")
+    s.tick(5); e.ChatFrame1.mouseOver = true
+    s.tick(5); s.tick(5); s.hidden()
+    assert(e.ChatFrame1.alpha == 0.85, "hovered chat faded")
+    assert(e.MainMenuBar.alpha == 0 or e.ActionButton1.alpha == 0)
+    e.ChatFrame1.mouseOver = false
+    s.tick(2); s.hidden(); assert(e.ChatFrame1.alpha == 0.85)
+    s.tick(2); s.hidden(); assert(e.ChatFrame1.alpha == 0, "chat stayed after leaving")
+    e.ChatFrame1.mouseOver = true
+    s.tick(); s.tick(4); s.hidden()
+    assert(e.ChatFrame1.alpha == 0, "hovering faded chat revealed it")
+end)
+
+test("hovering chat composes with bags and combat", function()
+    local s, e = setup()
+    s.event("CHAT_MSG_SAY")
+    e.ContainerFrame1:Show(); s.tick(); e.ChatFrame1Tab.mouseOver = true
+    s.tick(12); s.hidden()
+    assert(e.ChatFrame1.alpha == 0.85 and e.ContainerFrame1.alpha == 1)
+    s.combat = true; s.event("PLAYER_REGEN_DISABLED"); s.tick(5); s.hidden()
+    assert(e.ChatFrame1.alpha == 0.85 and e.ActionButton1.alpha == 0.8)
+    e.ChatFrame1Tab.mouseOver = false; s.tick(4); s.hidden()
+    assert(e.ChatFrame1.alpha == 0 and e.ActionButton1.alpha == 0.8)
+end)
+
+test("hovering chat in a visible UI keeps only chat after the UI hides", function()
+    local s, e = setup(true)
+    e.ChatFrame1.mouseOver = true
+    s.tick(4); s.tick(4); s.hidden()
+    assert(e.ChatFrame1.alpha == 0.85, "hovered chat faded with the UI")
+    e.ChatFrame1.mouseOver = false; s.tick(4); s.hidden()
+    assert(e.ChatFrame1.alpha == 0)
+    e.ChatFrame1.mouseOver = true
+    e.SlashCmdList.SMARTHIDEUI("off"); s.tick(10); s.visible()
+    assert(e.ChatFrame1.alpha == 0.85)
+end)
+
 test("chat respects visible entry and explicit overrides", function()
     local s, e = setup(true)
     s.key("OnKeyDown", "OPENCHAT")
@@ -1213,8 +1253,36 @@ test("Escape menus preserve visible entry and overrides", function()
     end
 end)
 
-test("Forever keeps safety UI without reading secret health", function()
+test("Forever fades the player frame at full health out of combat", function()
     local s, e = setup(false, "forever")
+    assert(e.PlayerFrame.alpha == 0, "player frame stayed visible while idle")
+    s.health = 60; s.event("UNIT_HEALTH", "player"); s.hidden()
+    assert(e.PlayerFrame.alpha == 0.7, "missing health did not reveal the player frame")
+    s.health = 100; s.event("UNIT_HEALTH", "player"); s.hidden()
+    assert(e.PlayerFrame.alpha == 0)
+    s.combat = true; s.event("PLAYER_REGEN_DISABLED"); s.tick(); s.hidden()
+    assert(e.PlayerFrame.alpha == 0.7)
+    s.combat = false; s.event("PLAYER_REGEN_ENABLED"); s.tick(4); s.hidden()
+    assert(e.PlayerFrame.alpha == 0)
+    e.ContainerFrame1:Show(); s.event("BAG_UPDATE_DELAYED"); s.tick(); s.hidden()
+    assert(e.PlayerFrame.alpha == 0, "bags revealed the player frame")
+    e.ContainerFrame1:Hide(); s.tick(); s.hidden()
+    e.SlashCmdList.SMARTHIDEUI("off"); s.visible()
+    assert(e.PlayerFrame.alpha == 0.7)
+end)
+
+test("Forever player frame preserves visible entry", function()
+    local s, e = setup(true, "forever")
+    assert(e.PlayerFrame.alpha == 0.7); s.visible()
+    s.tick(4); s.hidden()
+    assert(e.PlayerFrame.alpha == 0)
+    e.SlashCmdList.SMARTHIDEUI("show"); s.tick(4); s.visible()
+    assert(e.PlayerFrame.alpha == 0.7)
+end)
+
+test("Forever keeps safety UI without comparing secret health", function()
+    local s, e = setup(false, "forever")
+    s.secretHealth = true; s.event("UNIT_HEALTH", "player"); s.hidden()
     assert(e.PlayerFrame.alpha == 0.7)
     assert(e.BuffFrame.alpha == 0.8 and e.DebuffFrame.alpha == 0.9)
     assert(e.MainActionBar.alpha == 0 and e.BagsBar.alpha == 0)
@@ -1355,6 +1423,50 @@ test("Forever retries protected alpha restoration after combat", function()
     s.combat = false; s.tick()
     assert(e.BagsBar.alpha == 0.7)
     s.visible()
+end)
+
+test("Forever Chronicle journal stays open without revealing the HUD", function()
+    local s, e = setup(false, "forever")
+    -- Chronicle creates its journal on first use, after the UI is already idle.
+    local journal = s.createFrame("ChronicleJournalFrame", e.UIParent, false, 0.95)
+    local row = s.createFrame("ChronicleZoneRow", journal)
+    local menu = s.createFrame("ChronicleZoneMenu", e.UIParent, false, 0.97)
+    menu.anchor = row
+    local stray = s.createFrame("UnrelatedAddonPopup", e.UIParent, true, 0.9)
+    journal:Show(); s.tick(); s.hidden()
+    assert(journal.alpha == 0.95 and row.alpha == 1, "journal was faded")
+    assert(e.MainActionBar.alpha == 0 and e.PlayerFrame.alpha == 0 and stray.alpha == 0)
+    s.tick(10); s.tick(10); s.hidden()
+    assert(journal.alpha == 0.95, "journal faded after a while")
+    menu:Show(); s.tick(); s.hidden()
+    assert(menu.alpha == 0.97 and stray.alpha == 0, "journal menu was faded")
+    menu:Hide(); s.tick(); s.hidden()
+    assert(menu.alpha == 0)
+    e.ContainerFrame1:Show(); s.event("BAG_UPDATE_DELAYED"); s.tick(); s.hidden()
+    assert(journal.alpha == 0.95 and e.ContainerFrame1.alpha == 1 and e.MainActionBar.alpha == 0.8)
+    e.ContainerFrame1:Hide(); s.tick(); s.hidden()
+    s.combat = true; s.event("PLAYER_REGEN_DISABLED"); s.tick(); s.hidden()
+    assert(journal.alpha == 0.95 and e.MainActionBar.alpha == 0.8)
+    s.combat = false; s.event("PLAYER_REGEN_ENABLED"); s.tick(); s.hidden()
+    assert(journal.alpha == 0.95 and e.MainActionBar.alpha == 0)
+    journal:Hide(); s.tick(); s.hidden()
+    assert(journal.alpha == 0 and stray.alpha == 0)
+    -- A faded journal is restored by its own OnShow, before the next tick.
+    journal:Show(); s.hidden()
+    assert(journal.alpha == 0.95, "reopened journal flashed in faded")
+    e.SlashCmdList.SMARTHIDEUI("off"); s.visible()
+    assert(journal.alpha == 0.95 and stray.alpha == 0.9)
+end)
+
+test("Forever Chronicle journal preserves visible entry and overrides", function()
+    local s, e = setup(true, "forever")
+    local journal = s.createFrame("ChronicleJournalFrame", e.UIParent, false, 0.95)
+    journal:Show(); s.tick(4); s.tick(4); s.visible()
+    assert(journal.alpha == 0.95)
+    journal:Hide(); s.tick(4); s.hidden()
+    e.SlashCmdList.SMARTHIDEUI("show")
+    journal:Show(); s.tick(4); s.visible()
+    assert(journal.alpha == 0.95)
 end)
 
 test("recipe toast keeps its native fade through hidden interactions", function()
