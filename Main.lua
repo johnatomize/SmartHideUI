@@ -106,6 +106,14 @@ local journalFrames = { "ChronicleJournalFrame" }
 local function IsJournalOpen()
     return AnyShown(journalFrames)
 end
+-- Chronicle's notes, speaker window, share window, tour and menus are also
+-- UIParent children, created on first use. They are never faded; Chronicle
+-- alone decides when they show and hide, including its auto-hide timers.
+local chroniclePopupFrames = {
+    "ChronicleReminderToast", "ChronicleTalkingHead", "ChronicleReasonsList",
+    "ChronicleShareFrame", "ChronicleShareNudge", "ChronicleTourBubble",
+    "ChronicleZoneMenu",
+}
 local questFrames = { "QuestFrame", "GossipFrame" }
 local function IsQuestConversationOpen()
     for _, name in ipairs(questFrames) do
@@ -576,6 +584,12 @@ local function ApplyRecipeAlertUI(keep, ancestors)
     end
 end
 
+-- Keep Chronicle's popups at their own alpha in every policy, before they are
+-- shown, so a popup appearing while idle never inherits a faded alpha.
+local function ApplyChroniclePopupUI(keep, ancestors)
+    KeepNamedFrames(keep, ancestors, chroniclePopupFrames)
+end
+
 local function ApplyCastingUI(keep, ancestors)
     -- Preserve the bar before OnShow; Blizzard owns its progress and fade-out.
     for _, name in ipairs({ "CastingBarFrame", "PlayerCastingBarFrame" }) do
@@ -691,6 +705,7 @@ HideUI = function()
     ApplyMenuUI(keepAuras, playerAncestors)
     ApplyEditModeFrames(keepAuras, playerAncestors)
     ApplyRecipeAlertUI(keepAuras, playerAncestors)
+    ApplyChroniclePopupUI(keepAuras, playerAncestors)
     for _, name in ipairs(auraFrames) do
         local frame = _G[name]
         if frame then
@@ -832,6 +847,7 @@ local function ApplySelectiveUI(mode)
     ApplyMenuUI(keep, ancestors)
     ApplyEditModeFrames(keep, ancestors)
     ApplyRecipeAlertUI(keep, ancestors)
+    ApplyChroniclePopupUI(keep, ancestors)
     -- All interactions use standard item and comparison tooltips without
     -- rediscovering tooltip frames across the entire UI on every refresh.
     local visibleFrames = { "GameTooltip", "ShoppingTooltip1", "ShoppingTooltip2" }
@@ -1409,11 +1425,27 @@ local function IsShown(name)
     return frame and frame:IsShown()
 end
 
+-- Chronicle's share window focuses its text so it can be copied. Focus inside
+-- a Chronicle popup does not need the rest of the UI; focus elsewhere does.
+local function HasKeyboardFocus()
+    local focus = GetCurrentKeyBoardFocus and GetCurrentKeyBoardFocus()
+    if not focus then return false end
+    local popups = {}
+    for _, name in ipairs(chroniclePopupFrames) do
+        if _G[name] then popups[_G[name]] = true end
+    end
+    local current = focus
+    while current and current ~= UIParent and not IsForbidden(current) do
+        if popups[current] then return false end
+        current = current.GetParent and current:GetParent() or nil
+    end
+    return true
+end
+
 local function IsInteracting()
     if IsChatting() then return true end
     if InCombatLockdown() or UnitAffectingCombat("player")
-        or IsPlayerCasting()
-        or (GetCurrentKeyBoardFocus and GetCurrentKeyBoardFocus()) then
+        or IsPlayerCasting() or HasKeyboardFocus() then
         return true
     end
     -- Open panels remain readable even when the mouse stops moving.
